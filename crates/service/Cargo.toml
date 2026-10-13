@@ -1,0 +1,17 @@
+[package]
+name = "neuralav-service"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "neuralav-service"
+path = "src/main.rs"
+
+[dependencies]
+neuralav-engine = { path = "../engine" }
+neuralav-proto = { path = "../proto" }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3"

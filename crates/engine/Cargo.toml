@@ -1,0 +1,14 @@
+[package]
+name = "neuralav-engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+neuralav-proto = { path = "../proto" }
+sha2 = "0.10.8"
+walkdir = "2.4.0"
+yara-x = "1"
+
+[dev-dependencies]
+tempfile = "3"

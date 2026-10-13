@@ -12,10 +12,8 @@ function MultiBox() {
     document.getElementById("folder").click();
   });
 
-  // delete_file resolves the basename against the scanned folder on the Rust side
   async function deleteFile(fullpath) {
-    var filepath = fullpath.split("\\").pop();
-    var output = await invoke("delete_file", { filepath: filepath });
+    var output = await invoke("remote_delete", { filepath: fullpath });
     showMsg(output);
     var newfilelist = filelist().filter(function (el) {
       return el[0] != fullpath;

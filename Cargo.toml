@@ -1,0 +1,10 @@
+[workspace]
+members = ["src-tauri", "crates/proto", "crates/engine", "crates/service"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

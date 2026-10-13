@@ -8,15 +8,15 @@
     "dev": "vite",
     "build": "vite build",
     "serve": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "release": "node scripts/release.mjs npm run tauri build",
+    "release:service": "node scripts/release.mjs cargo build --release -p neuralav-service"
   },
   "license": "MIT",
   "dependencies": {
     "@solidjs/router": "^1.0.0",
     "@tauri-apps/api": "^2.12.3",
-    "chart.js": "^4.5.1",
     "jspdf": "^4.2.1",
-    "solid-chartjs": "^1.3.11",
     "solid-js": "^1.9.17"
   },
   "devDependencies": {

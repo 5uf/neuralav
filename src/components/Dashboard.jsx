@@ -1,7 +1,6 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import Memory from "./widgets/memory";
-import Security from "./widgets/security";
 import { jsPDF } from "jspdf";
 import { useNavigate } from "@solidjs/router";
 import "./Dashboard.css";
@@ -13,7 +12,6 @@ function Dashboard() {
   var filepath = "";
   var metadata = "";
   var mal_class = "";
-  var accuracy = "";
   var text = "";
   async function scan() {
     filepath = this.files[0].name;
@@ -28,14 +26,16 @@ function Dashboard() {
         metadata = await invoke("metafunc", { filepath: filepath });
         console.log(metadata);
         mal_class = result.split(",")[0];
-        accuracy = result.split(",")[1];
-        text = result.split(",")[2];
-        var classification = mal_class + " (" + accuracy + "%)";
+        text = result.split(",")[1];
+        var classification = mal_class;
         document.getElementById("loader").style.display = "none";
         var cls = document.getElementById("classification");
         cls.style.whiteSpace = "pre-line";
         cls.textContent = classification + "\n" + text;
         document.getElementById("btn").style.display = "block";
+      } else if (output == "Suspicious") {
+        document.getElementById("classification").textContent = "Suspicious: possible malware, review before acting";
+        document.getElementById("btn").style.display = "none";
       } else if (output == "Harmless") {
         document.getElementById("classification").textContent = "Harmless";
         document.getElementById("btn").style.display = "none";
@@ -89,7 +89,6 @@ function Dashboard() {
     var report = {
       filename: filename,
       classification: mal_class,
-      accuracy: accuracy,
     }
     //generate the pdf
     var doc = new jsPDF();
@@ -100,7 +99,6 @@ function Dashboard() {
     doc.text("Name of File: " + report.filename, 10, 20);
     doc.text("Path of File: " + filepath, 10, 25);
     doc.text("Malware Classification Type: " + report.classification, 10, 30);
-    doc.text("NeuralAV Accuracy: " + report.accuracy, 10, 40);
     doc.text(metadata, 10, 45);
     doc.save("report.pdf");
     
@@ -145,9 +143,6 @@ function Dashboard() {
       <div class="dashboard" id="widget">
         <div class="card">
           <Memory />
-        </div>
-        <div class="card">
-          <Security />
         </div>
       </div>
       <br />

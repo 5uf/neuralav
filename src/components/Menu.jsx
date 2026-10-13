@@ -4,7 +4,6 @@ import "./Menu.css";
 function Menu() {
   const items = [ 
     {name: "Dashboard", icon: "dashboard", url: "/"},
-    {name: "Statistics", icon: "statistics", url: "/glob"},
     {name: "Quarantine", icon: "quarantine", url: "/quarantine"},
     {name: "Optimize", icon: "optimize", url: "/optimize"},
     {name: "About System", icon: "about", url: "/about"}
