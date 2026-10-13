@@ -1,15 +1,17 @@
-//! Neural-AV scan engine: allowlist/known-bad hashes, own literal signatures (aho-corasick), then a static
+//! Neural-AV scan engine: allowlist/known-bad hashes, own literal signatures (aho-corasick), then a PyInstaller
+//! one-file unpacker (entries re-scanned by the layers above), then a static
 //! gradient-boosted-tree model on PE files (Suspicious only). No IPC, no UI.
 mod authenticode;
 pub mod gbdt;
 mod pe;
 pub mod pe_features;
+mod pyinstaller;
 
 use neuralav_proto::{Layer, Reason, Status, Verdict};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use aho_corasick::AhoCorasick;
 use std::path::{Path, PathBuf};
 
@@ -177,12 +179,13 @@ fn load_sigs(dir: &Path) -> Result<(Sigs, usize)> {
 
 impl Sigs {
     /// Streams the file in 64 KiB chunks, keeping `max_len - 1` bytes of overlap so literals spanning chunks match.
-    fn scan(&self, path: &Path) -> std::io::Result<Vec<&str>> {
+    fn scan(&self, path: &Path) -> std::io::Result<(Vec<&str>, Option<u64>)> {
         const CHUNK: usize = 64 * 1024;
-        let keep = self.max_len - 1;
+        let keep = (self.max_len - 1).max(8); // also covers the PyInstaller cookie magic across chunks
         let mut file = File::open(path)?;
         let mut buf = vec![0u8; keep + CHUNK];
         let mut have = 0; // carried bytes at the start of buf
+        let (mut base, mut magic) = (0u64, None); // file offset of buf[0], last PyInstaller magic seen
         let mut seen = vec![0u64; self.rules.len()];
         loop {
             let n = file.read(&mut buf[have..])?;
@@ -190,14 +193,17 @@ impl Sigs {
                 break;
             }
             let end = have + n;
+            pyinstaller::last_magic(&buf[..end], base, &mut magic);
             for m in self.ac.find_overlapping_iter(&buf[..end]) {
                 let (r, bit) = self.owner[m.pattern().as_usize()];
                 seen[r] |= 1 << bit;
             }
-            have = keep.min(end);
+            let carry = keep.min(end);
+            base += (end - carry) as u64;
+            have = carry;
             buf.copy_within(end - have..end, 0);
         }
-        Ok(self.matched(&seen))
+        Ok((self.matched(&seen), magic))
     }
 
     /// Same result as `scan` for a file already in memory.
@@ -384,13 +390,51 @@ impl Engine {
         }
 
         // Layer 2: literal signatures.
+        let mut magic = None;
         let hits = match &buf {
-            Some(b) => self.sigs.scan_bytes(b),
-            None => self.sigs.scan(path).map_err(|e| format!("signatures: {e}"))?,
+            Some(b) => {
+                pyinstaller::last_magic(b, 0, &mut magic);
+                self.sigs.scan_bytes(b)
+            }
+            None => {
+                let (h, m) = self.sigs.scan(path).map_err(|e| format!("signatures: {e}"))?;
+                magic = m;
+                h
+            }
         };
         for name in hits {
             v.status = Status::Malicious;
             v.reasons.push(Reason { layer: Layer::Signature, detail: name.to_string() });
+        }
+
+        // Layer 2b: PyInstaller one-file bundle (any host format): hash + signature layers over each entry.
+        if v.status == Status::Clean {
+            let mut visit = |name: &str, bytes: &[u8], raw: bool| {
+                let h = sha256_hex(bytes);
+                if self.allow.contains_key(&h) {
+                    return false;
+                }
+                if let Some(bad) = self.known_bad.get(&h) {
+                    v.status = Status::Malicious;
+                    v.reasons.push(Reason { layer: Layer::Hash, detail: format!("inside PyInstaller: {name}: known bad {bad}").trim_end().to_string() });
+                    return true;
+                }
+                // Stored entries are bytes of the file itself, already covered by the whole-file signature scan.
+                let hits = if raw { Vec::new() } else { self.sigs.scan_bytes(bytes) };
+                for rule in &hits {
+                    v.status = Status::Malicious;
+                    v.reasons.push(Reason { layer: Layer::Signature, detail: format!("inside PyInstaller: {name}: {rule}") });
+                }
+                !hits.is_empty()
+            };
+            let walked = match &buf {
+                Some(b) => pyinstaller::walk(&mut Cursor::new(b.as_slice()), size, magic, &mut visit),
+                None => File::open(path).map_or(pyinstaller::Walk::Done, |mut f| pyinstaller::walk(&mut f, size, magic, &mut visit)),
+            };
+            // Caps hit with nothing found: the unread part could hold the payload, so never Clean.
+            if walked == pyinstaller::Walk::Truncated && v.status == Status::Clean {
+                return Err("not fully scanned: PyInstaller archive over limits".to_string());
+            }
         }
 
         // Layer 3: static model. Only files the layers above left Clean; it can say Suspicious, never Malicious.
@@ -466,7 +510,7 @@ mod tests {
             }
             let p = dir.path().join("f.bin");
             std::fs::write(&p, &data).unwrap();
-            let (streamed, memory) = (sigs.scan(&p).unwrap(), sigs.scan_bytes(&data));
+            let (streamed, memory) = (sigs.scan(&p).unwrap().0, sigs.scan_bytes(&data));
             assert_eq!(streamed, memory, "{name}");
             assert_eq!(streamed, want, "{name}");
         }

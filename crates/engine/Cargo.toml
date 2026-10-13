@@ -9,6 +9,8 @@ neuralav-proto = { path = "../proto" }
 sha2 = "0.10.8"
 walkdir = "2.4.0"
 aho-corasick = "1"
+memchr = "2"
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
 tempfile = "3"

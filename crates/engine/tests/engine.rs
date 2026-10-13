@@ -426,3 +426,243 @@ fn signature_still_wins_with_model_enabled() {
     assert_eq!(v.status, Status::Malicious, "{v:?}");
     assert!(v.reasons.iter().all(|r| r.layer != Layer::Model));
 }
+
+/// Minimal PyInstaller CArchive (new 88-byte cookie) appended to host bytes; entries are (name, compressed?, data).
+fn carchive(host: &[u8], entries: &[(&str, bool, &[u8])]) -> Vec<u8> {
+    let mut f = host.to_vec();
+    let start = f.len();
+    let mut toc = Vec::new();
+    for (name, z, data) in entries {
+        let stored = if *z { miniz_oxide::deflate::compress_to_vec_zlib(data, 6) } else { data.to_vec() };
+        let off = (f.len() - start) as u32;
+        f.extend_from_slice(&stored);
+        let n = format!("{name}\0");
+        for v in [18 + n.len() as u32, off, stored.len() as u32, data.len() as u32] {
+            toc.extend(v.to_be_bytes());
+        }
+        toc.extend([*z as u8, if name.starts_with('#') { b'x' } else { b's' }]);
+        toc.extend(n.as_bytes());
+    }
+    let toc_off = (f.len() - start) as u32;
+    f.extend_from_slice(&toc);
+    let pkg_len = (f.len() - start + 88) as u32;
+    f.extend(b"MEI\x0c\x0b\x0a\x0b\x0e");
+    for v in [pkg_len, toc_off, toc.len() as u32, 311] {
+        f.extend(v.to_be_bytes());
+    }
+    f.extend([0u8; 64]);
+    f
+}
+
+fn scan_blob(e: &Engine, d: &tempfile::TempDir, bytes: &[u8]) -> neuralav_proto::Verdict {
+    let p = d.path().join("bundle.bin");
+    std::fs::write(&p, bytes).unwrap();
+    e.scan_file(&p)
+}
+
+#[test]
+fn pyinstaller_entry_with_eicar_is_malicious_with_entry_name() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    // padded so deflate really compresses it (a short payload may be stored verbatim and hit the plain scan)
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    for host in [&b"MZ hostbytes"[..], b"\x7fELF hostbytes", b"\xcf\xfa\xed\xfe hostbytes"] {
+        let v = scan_blob(&e, &d, &carchive(host, &[("ok.py", false, b"print(1)"), ("evil,\nmod", true, &e1)]));
+        assert_eq!(v.status, Status::Malicious);
+        assert!(v.error.is_none());
+        assert!(v.reasons.iter().any(|r| r.layer == Layer::Signature && r.detail == "inside PyInstaller: evilmod: EICAR_Test_File"), "{:?}", v.reasons);
+    }
+}
+
+#[test]
+fn pyinstaller_clean_archive_is_clean() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let v = scan_blob(&e, &d, &carchive(b"MZ host", &[("a.py", true, b"print('hi')"), ("b.py", false, b"x=1")]));
+    assert_eq!(v.status, Status::Clean);
+    assert!(v.error.is_none() && v.reasons.is_empty());
+}
+
+#[test]
+fn pyinstaller_corrupt_toc_still_scans_whole_file_normally() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut f = carchive(&eicar(), &[("a.py", true, b"print('hi')")]);
+    let n = f.len();
+    f[n - 88 + 12..n - 88 + 16].copy_from_slice(&0xffff_ffffu32.to_be_bytes()); // toc_len
+    let v = scan_blob(&e, &d, &f);
+    assert_eq!(v.status, Status::Malicious); // EICAR in the host bytes, found by the plain signature scan
+    f.truncate(n - 30);
+    assert_eq!(scan_blob(&e, &d, &f).status, Status::Malicious);
+}
+
+#[test]
+fn pyinstaller_over_budget_is_error_not_clean_and_never_suspicious() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let v = scan_blob(&e, &d, &carchive(b"MZ host", &[("zeros", true, &vec![0u8; 40 << 20])]));
+    assert!(v.status == Status::Clean && v.error.is_none(), "{v:?}"); // within budget
+    let t = std::time::Instant::now();
+    let v = scan_blob(&e, &d, &carchive(b"MZ host", &[("zeros", true, &vec![0u8; 70 << 20])]));
+    assert_eq!(v.status, Status::Clean);
+    assert_eq!(v.error.as_deref(), Some("not fully scanned: PyInstaller archive over limits"));
+    assert!(t.elapsed().as_secs() < 10);
+}
+
+#[test]
+fn pyinstaller_script_found_despite_4096_padding_entries() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    let names: Vec<String> = (0..4096).map(|i| format!("#pad{i}")).collect();
+    let mut entries: Vec<(&str, bool, &[u8])> = names.iter().map(|n| (n.as_str(), false, &b"p"[..])).collect();
+    entries.push(("payload", true, &e1));
+    let v = scan_blob(&e, &d, &carchive(b"MZ host", &entries));
+    assert_eq!(v.status, Status::Malicious, "{v:?}");
+    assert!(v.reasons.iter().any(|r| r.detail == "inside PyInstaller: payload: EICAR_Test_File"));
+}
+
+#[test]
+fn pyinstaller_entry_cap_without_a_hit_is_error_not_clean() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (0..4100).map(|i| format!("#pad{i}")).collect();
+    let entries: Vec<(&str, bool, &[u8])> = names.iter().map(|n| (n.as_str(), false, &b"p"[..])).collect();
+    let v = scan_blob(&e, &d, &carchive(b"MZ host", &entries));
+    assert_eq!(v.status, Status::Clean);
+    assert_eq!(v.error.as_deref(), Some("not fully scanned: PyInstaller archive over limits"));
+}
+
+#[test]
+fn pyinstaller_payload_found_behind_large_trailer() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    let mut f = carchive(b"MZ host", &[("payload", true, &e1)]);
+    f.extend(vec![0u8; 100 * 1024]); // e.g. an Authenticode certificate table
+    let v = scan_blob(&e, &d, &f);
+    assert_eq!(v.status, Status::Malicious, "{v:?}");
+}
+
+#[test]
+fn toc_over_cap_is_not_clean() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    // one real script entry, then enough padding records that the TOC passes 2 MiB
+    let mut f = carchive(b"MZ host", &[("ok.py", false, b"print(1)")]);
+    let cookie = f.split_off(f.len() - 88);
+    let toc_len = u32::from_be_bytes(cookie[16..20].try_into().unwrap()) as usize;
+    let toc_off = u32::from_be_bytes(cookie[12..16].try_into().unwrap());
+    let mut toc = f.split_off(f.len() - toc_len);
+    while toc.len() < 2 * 1024 * 1024 + 1024 {
+        let rec = [&36u32.to_be_bytes()[..], &[0u8; 12], &[0, b'x'], b"pad\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"].concat();
+        toc.extend_from_slice(&rec[..36]);
+    }
+    f.extend_from_slice(&toc);
+    let pkg_len = (f.len() - 7 + 88) as u32;
+    f.extend(b"MEI\x0c\x0b\x0a\x0b\x0e");
+    for v in [pkg_len, toc_off, toc.len() as u32, 311] {
+        f.extend(v.to_be_bytes());
+    }
+    f.extend([0u8; 64]);
+    let v = scan_blob(&e, &d, &f);
+    assert_eq!(v.status, Status::Clean);
+    assert_eq!(v.error.as_deref(), Some("not fully scanned: PyInstaller archive over limits"));
+}
+
+#[test]
+fn cookie_beyond_1mib_trailer_still_scanned() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    for host in [&b"MZ host"[..], b"\x7fELF host"] {
+        let mut f = carchive(host, &[("payload", true, &e1)]);
+        f.extend(vec![0u8; 3 * 1024 * 1024]);
+        let v = scan_blob(&e, &d, &f);
+        assert_eq!(v.status, Status::Malicious, "{v:?}");
+    }
+}
+
+#[test]
+fn entry_after_cookie_still_scanned() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&e1, 6);
+    // the entry's data sits after the cookie, past pkg_len; the real bootloader reads it anyway
+    let name = b"payload\0";
+    let mut toc = Vec::new();
+    let data_off = (7 + 18 + name.len() + 88) as u32; // after host, TOC and cookie, relative to pkg_start = 7
+    let data_off = data_off - 7;
+    for v in [18 + name.len() as u32, data_off, z.len() as u32, e1.len() as u32] {
+        toc.extend(v.to_be_bytes());
+    }
+    toc.extend([1u8, b's']);
+    toc.extend(name);
+    let mut f = b"MZ host".to_vec();
+    f.extend_from_slice(&toc);
+    let pkg_len = (toc.len() + 88) as u32;
+    f.extend(b"MEI\x0c\x0b\x0a\x0b\x0e");
+    for v in [pkg_len, 0, toc.len() as u32, 311] {
+        f.extend(v.to_be_bytes());
+    }
+    f.extend([0u8; 64]);
+    assert_eq!(f.len() - 7, data_off as usize);
+    f.extend_from_slice(&z);
+    let v = scan_blob(&e, &d, &f);
+    assert_eq!(v.status, Status::Malicious, "{v:?}");
+}
+
+/// Rewrites the TOC of a `carchive` bundle (host of `host_len` bytes) and rebuilds the cookie around it.
+fn retoc(mut f: Vec<u8>, host_len: usize, edit: impl Fn(Vec<u8>) -> Vec<u8>) -> Vec<u8> {
+    let cookie = f.split_off(f.len() - 88);
+    let toc_off = u32::from_be_bytes(cookie[12..16].try_into().unwrap());
+    let toc_len = u32::from_be_bytes(cookie[16..20].try_into().unwrap()) as usize;
+    let toc = edit(f.split_off(f.len() - toc_len));
+    f.extend_from_slice(&toc);
+    let pkg_len = (f.len() - host_len + 88) as u32;
+    f.extend(b"MEI\x0c\x0b\x0a\x0b\x0e");
+    for v in [pkg_len, toc_off, toc.len() as u32, 311] {
+        f.extend(v.to_be_bytes());
+    }
+    f.extend([0u8; 64]);
+    f
+}
+
+#[test]
+fn pyinstaller_same_bytes_raw_and_compressed_entries_both_scanned() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    // a stored (flag 0) record over the same zlib bytes comes first; the compressed one must still be inflated
+    let f = retoc(carchive(b"MZ host", &[("payload", true, &e1)]), 7, |rec| {
+        let mut raw = rec.clone();
+        raw[16] = 0;
+        [raw, rec].concat()
+    });
+    let v = scan_blob(&e, &d, &f);
+    assert_eq!(v.status, Status::Malicious, "{v:?}");
+}
+
+#[test]
+fn pyinstaller_short_toc_record_is_not_clean() {
+    let (e, _r) = engine_with("", "", None);
+    let d = tempfile::tempdir().unwrap();
+    let mut e1 = eicar();
+    e1.extend(vec![b'.'; 4096]);
+    // a 16-byte record (no flag/type/name) the bootloader steps over; the real script follows it
+    let f = retoc(carchive(b"MZ host", &[("payload", true, &e1)]), 7, |rec| {
+        let mut short = rec[..16].to_vec();
+        short[..4].copy_from_slice(&16u32.to_be_bytes());
+        [short, rec].concat()
+    });
+    let v = scan_blob(&e, &d, &f);
+    assert_ne!(v.status, Status::Suspicious);
+    assert!(v.status == Status::Malicious || v.error.as_deref() == Some("not fully scanned: PyInstaller archive over limits"), "{v:?}");
+}

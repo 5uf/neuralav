@@ -1802,6 +1802,7 @@ dependencies = [
  "libc",
  "neuralav-engine",
  "neuralav-proto",
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -1813,6 +1814,8 @@ name = "neuralav-engine"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "memchr",
+ "miniz_oxide 0.8.9",
  "neuralav-proto",
  "sha2",
  "tempfile",
