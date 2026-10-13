@@ -1,4 +1,10 @@
-//! Neural-AV scan engine: allowlist/known-bad hashes, then own literal signatures (aho-corasick). No IPC, no UI.
+//! Neural-AV scan engine: allowlist/known-bad hashes, own literal signatures (aho-corasick), then a static
+//! gradient-boosted-tree model on PE files (Suspicious only). No IPC, no UI.
+mod authenticode;
+pub mod gbdt;
+mod pe;
+pub mod pe_features;
+
 use neuralav_proto::{Layer, Reason, Status, Verdict};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -13,11 +19,25 @@ pub type Result<T> = std::result::Result<T, String>;
 pub struct EngineConfig {
     pub rules_dir: PathBuf,
     pub max_file_size: u64,
+    /// Static model score at or above which a PE is reported Suspicious. See `DEFAULT_MODEL_THRESHOLD`.
+    pub model_threshold: f64,
 }
+
+/// Static-model file under the rules dir. Absent = layer disabled; present but invalid = `Engine::load` fails.
+pub const MODEL_FILE: &str = "models/ember2024_pe.navgbdt";
+
+/// Static-model alert threshold (probability of malicious). Conservative on purpose: the EMBER2024 PE model's
+/// scores are not calibrated for this feature port (see docs/ARCHITECTURE.md), and Suspicious is only a hint.
+// ponytail: fixed constant; calibrate per file population (TPR at a fixed FPR on our own benign corpus) before lowering it.
+pub const DEFAULT_MODEL_THRESHOLD: f64 = 0.95;
+
+/// PEs larger than this skip the model: the feature extractor needs the whole file in memory.
+// ponytail: 16 MiB cap keeps peak RSS small; an mmap-based extractor would lift it.
+const MODEL_MAX_FILE: u64 = 16 * 1024 * 1024;
 
 impl EngineConfig {
     pub fn new(rules_dir: impl Into<PathBuf>) -> Self {
-        EngineConfig { rules_dir: rules_dir.into(), max_file_size: 256 * 1024 * 1024 }
+        EngineConfig { rules_dir: rules_dir.into(), max_file_size: 256 * 1024 * 1024, model_threshold: DEFAULT_MODEL_THRESHOLD }
     }
 
     /// `NEURALAV_RULES`, else `<exe dir>/rules`, else (debug builds only) the repo path `crates/engine/rules`.
@@ -38,6 +58,18 @@ impl EngineConfig {
 #[derive(Debug, Clone)]
 pub struct EngineStatus {
     pub rules: usize,
+    /// Trees in the static model; `None` = model file absent, layer disabled.
+    pub model_trees: Option<usize>,
+    pub model_threshold: f64,
+}
+
+/// Static-model result for one file.
+enum Outcome {
+    /// Not a PE, no model, or too small.
+    Skip,
+    Score(f64),
+    /// PE structure exhausted the parser's work budget (crafted to burn CPU).
+    Anomalous,
 }
 
 pub struct Engine {
@@ -45,6 +77,7 @@ pub struct Engine {
     allow: HashMap<String, String>,
     known_bad: HashMap<String, String>,
     sigs: Sigs,
+    model: Option<gbdt::Model>,
 }
 
 /// Literal signatures: a rule matches when every one of its literals occurs in the file.
@@ -164,7 +197,24 @@ impl Sigs {
             have = keep.min(end);
             buf.copy_within(end - have..end, 0);
         }
-        Ok(self.rules.iter().zip(&seen).filter(|((_, mask), s)| mask == *s).map(|((n, _), _)| n.as_str()).collect())
+        Ok(self.matched(&seen))
+    }
+
+    /// Same result as `scan` for a file already in memory.
+    fn scan_bytes(&self, b: &[u8]) -> Vec<&str> {
+        let mut seen = vec![0u64; self.rules.len()];
+        for m in self.ac.find_overlapping_iter(b) {
+            if let Some(&(r, bit)) = self.owner.get(m.pattern().as_usize()) {
+                if let Some(s) = seen.get_mut(r) {
+                    *s |= 1 << bit;
+                }
+            }
+        }
+        self.matched(&seen)
+    }
+
+    fn matched(&self, seen: &[u64]) -> Vec<&str> {
+        self.rules.iter().zip(seen).filter(|((_, mask), s)| mask == *s).map(|((n, _), _)| n.as_str()).collect()
     }
 }
 
@@ -183,6 +233,22 @@ fn load_hashes(path: &Path) -> Result<HashMap<String, String>> {
         }
     }
     Ok(map)
+}
+
+fn starts_with_mz(path: &Path) -> bool {
+    let mut magic = [0u8; 2];
+    File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"MZ"
+}
+
+/// At most `size` bytes of the file.
+fn read_file(path: &Path, size: u64) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(size as usize);
+    File::open(path)?.take(size).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+fn sha256_hex(b: &[u8]) -> String {
+    Sha256::digest(b).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
@@ -219,16 +285,59 @@ impl Engine {
 
         let (sigs, _) = load_sigs(&cfg.rules_dir.join("sigs"))?;
 
+        // Fail closed on a present-but-broken model; a missing file only disables layer 3.
+        let model_path = cfg.rules_dir.join(MODEL_FILE);
+        let model = match std::fs::read(&model_path) {
+            Ok(bytes) => {
+                let m = gbdt::Model::load(&bytes).map_err(|e| format!("{}: {e}", model_path.display()))?;
+                if m.n_features() != pe_features::DIM {
+                    return Err(format!("{}: expects {} features, extractor produces {}", model_path.display(), m.n_features(), pe_features::DIM));
+                }
+                Some(m)
+            }
+            // A release build must not silently run without layer 3; only debug builds (tests) may.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && cfg!(debug_assertions) => None,
+            Err(e) => return Err(format!("{}: {e}", model_path.display())),
+        };
+
         Ok(Engine {
             cfg,
             allow,
             known_bad,
             sigs,
+            model,
         })
     }
 
     pub fn status(&self) -> EngineStatus {
-        EngineStatus { rules: self.sigs.rules.len() }
+        EngineStatus {
+            rules: self.sigs.rules.len(),
+            model_trees: self.model.as_ref().map(gbdt::Model::n_trees),
+            model_threshold: self.cfg.model_threshold,
+        }
+    }
+
+    /// Static-model score of a PE file, `None` for anything that is not a parseable PE (or too large).
+    pub fn model_score(&self, path: &Path, size: u64) -> std::io::Result<Option<f64>> {
+        if self.model.is_none() || !(64..=MODEL_MAX_FILE).contains(&size) {
+            return Ok(None);
+        }
+        Ok(match self.model_outcome(&read_file(path, size)?) {
+            Outcome::Score(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    fn model_outcome(&self, buf: &[u8]) -> Outcome {
+        let Some(model) = self.model.as_ref() else { return Outcome::Skip };
+        if buf.len() < 64 || !buf.starts_with(b"MZ") {
+            return Outcome::Skip;
+        }
+        match pe_features::extract_checked(buf) {
+            Ok(x) => Outcome::Score(model.predict(&x)),
+            Err(pe_features::ParseError::NotPe) => Outcome::Skip,
+            Err(pe_features::ParseError::Exhausted) => Outcome::Anomalous,
+        }
     }
 
     pub fn scan_file(&self, path: &Path) -> Verdict {
@@ -252,7 +361,13 @@ impl Engine {
             return Err("not fully scanned: not a regular file".to_string());
         }
         let size = meta.len();
-        v.sha256 = sha256_file(path).map_err(|e| e.to_string())?;
+        // Only MZ files the model can read are loaded (once, shared by the hash, signature and model layers);
+        // everything else is streamed.
+        let buf = if size <= MODEL_MAX_FILE && starts_with_mz(path) { Some(read_file(path, size).map_err(|e| e.to_string())?) } else { None };
+        v.sha256 = match &buf {
+            Some(b) => sha256_hex(b),
+            None => sha256_file(path).map_err(|e| e.to_string())?,
+        };
 
         // Layer 1: hashes. Allowlist wins over everything.
         if let Some(name) = self.allow.get(&v.sha256) {
@@ -269,9 +384,29 @@ impl Engine {
         }
 
         // Layer 2: literal signatures.
-        for name in self.sigs.scan(path).map_err(|e| format!("signatures: {e}"))? {
+        let hits = match &buf {
+            Some(b) => self.sigs.scan_bytes(b),
+            None => self.sigs.scan(path).map_err(|e| format!("signatures: {e}"))?,
+        };
+        for name in hits {
             v.status = Status::Malicious;
             v.reasons.push(Reason { layer: Layer::Signature, detail: name.to_string() });
+        }
+
+        // Layer 3: static model. Only files the layers above left Clean; it can say Suspicious, never Malicious.
+        if v.status == Status::Clean {
+            match buf.as_deref().map_or(Outcome::Skip, |b| self.model_outcome(b)) {
+                Outcome::Score(s) if s >= self.cfg.model_threshold => {
+                    v.status = Status::Suspicious;
+                    v.reasons.push(Reason { layer: Layer::Model, detail: format!("Static model {s:.2}") });
+                }
+                // Not Clean: a structure built to exhaust the parser must not pass silently. Never Malicious.
+                Outcome::Anomalous => {
+                    v.status = Status::Suspicious;
+                    v.reasons.push(Reason { layer: Layer::Model, detail: "Static model: anomalous PE structure".to_string() });
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -300,6 +435,40 @@ impl Engine {
                 Ok(e) => on_verdict(self.scan_file(e.path())),
                 Err(e) => on_verdict(error(e.path().unwrap_or(root), e.to_string())),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The streaming scan (files over the in-memory cap, and non-MZ files) must agree with the in-memory scan,
+    /// including a literal that straddles a read boundary.
+    #[test]
+    fn streaming_scan_matches_in_memory_scan_across_chunk_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sigs")).unwrap();
+        std::fs::write(dir.path().join("sigs/t.txt"), "straddle\t\"NEEDLE-A1\"\ntwo\t\"NEEDLE-B2\";\"NEEDLE-C3\"\nabsent\t\"NEEDLE-ZZ\"\n").unwrap();
+        let (sigs, _) = load_sigs(&dir.path().join("sigs")).unwrap();
+        let keep = sigs.max_len - 1;
+        let first_read = keep + 64 * 1024; // size of the first read; later reads are 64 KiB
+        let cases: [(&str, &[(usize, &str)], &[&str]); 3] = [
+            ("none", &[], &[]),
+            ("straddle first read", &[(first_read - 4, "NEEDLE-A1")], &["straddle"]),
+            // B2 ends exactly at a later boundary, C3 straddles the next one: needs the carried overlap
+            ("two literals over later boundaries", &[(first_read + 64 * 1024 - 9, "NEEDLE-B2"), (first_read + 2 * 64 * 1024 - 3, "NEEDLE-C3")], &["two"]),
+        ];
+        for (name, plants, want) in cases {
+            let mut data = vec![b'.'; first_read + 3 * 64 * 1024];
+            for &(at, lit) in plants {
+                data[at..at + lit.len()].copy_from_slice(lit.as_bytes());
+            }
+            let p = dir.path().join("f.bin");
+            std::fs::write(&p, &data).unwrap();
+            let (streamed, memory) = (sigs.scan(&p).unwrap(), sigs.scan_bytes(&data));
+            assert_eq!(streamed, memory, "{name}");
+            assert_eq!(streamed, want, "{name}");
         }
     }
 }

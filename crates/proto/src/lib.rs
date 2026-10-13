@@ -12,6 +12,8 @@ pub enum Status {
 pub enum Layer {
     Hash,
     Signature,
+    /// Static gradient-boosted-tree model on PE features. Can only produce Suspicious.
+    Model,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

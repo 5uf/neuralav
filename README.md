@@ -51,3 +51,7 @@ Tests use only the harmless EICAR test string, built at runtime. Never commit re
 MIT. See [LICENSE](LICENSE).
 
 Author: Muhammad Sufi Afifi
+
+## Third-party notices
+
+The static model `crates/engine/rules/models/ember2024_pe.navgbdt` is converted from the EMBER2024 PE LightGBM model (Apache-2.0, FutureComputing4AI, via Hugging Face `joyce8/EMBER2024-benchmark-models`). The feature definitions follow the `thrember` package of the same project. See [NOTICE](NOTICE).

@@ -329,3 +329,100 @@ fn max_len_literal_at_start_and_end_of_multi_chunk_file() {
     at_end[size - 4096..].copy_from_slice(lit.as_bytes());
     assert_eq!(sig_names(&e, &at_end), ["r"]);
 }
+
+// ---- static model layer ---------------------------------------------------------------------------------------
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+}
+
+/// Shipped rules plus model in a temp dir, so tests can change the threshold or corrupt the model.
+fn model_engine(threshold: f64) -> (Engine, tempfile::TempDir) {
+    let dir = rules_dir(Some(""), Some(""), true);
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    std::fs::copy(shipped_rules().join(neuralav_engine::MODEL_FILE), dir.path().join(neuralav_engine::MODEL_FILE)).unwrap();
+    let mut cfg = EngineConfig::new(dir.path());
+    cfg.model_threshold = threshold;
+    (Engine::load(cfg).unwrap(), dir)
+}
+
+#[test]
+fn shipped_model_loads() {
+    let e = Engine::load(EngineConfig::new(shipped_rules())).unwrap();
+    assert!(e.status().model_trees.is_some_and(|t| t > 0));
+}
+
+#[test]
+fn model_absent_disables_layer() {
+    let (e, _r) = engine_with("", "", None);
+    assert_eq!(e.status().model_trees, None);
+    let v = e.scan_file(&fixture("pe_high.bin"));
+    assert_eq!(v.status, Status::Clean, "{v:?}");
+}
+
+#[test]
+fn corrupt_model_fails_closed() {
+    let good = std::fs::read(shipped_rules().join(neuralav_engine::MODEL_FILE)).unwrap();
+    let mut cases: Vec<Vec<u8>> = vec![good[..good.len() / 2].to_vec(), b"garbage".to_vec(), Vec::new()];
+    let mut bad_magic = good.clone();
+    bad_magic[0] ^= 0xff;
+    cases.push(bad_magic);
+    let mut trailing = good.clone();
+    trailing.push(0);
+    cases.push(trailing);
+    for (i, bytes) in cases.iter().enumerate() {
+        let dir = rules_dir(Some(""), Some(""), true);
+        std::fs::create_dir_all(dir.path().join("models")).unwrap();
+        std::fs::write(dir.path().join(neuralav_engine::MODEL_FILE), bytes).unwrap();
+        assert!(Engine::load(EngineConfig::new(dir.path())).is_err(), "case {i} must be rejected");
+    }
+}
+
+#[test]
+fn model_scores_synthetic_pe_like_lightgbm() {
+    let (e, _r) = model_engine(0.95);
+    // Reference values: LightGBM EMBER2024_PE.model on the thrember feature vector of the same bytes.
+    for (name, want) in [("pe_high.bin", 0.9976923963317931), ("pe_mid.bin", 0.5936531466741555)] {
+        let p = fixture(name);
+        let got = e.model_score(&p, std::fs::metadata(&p).unwrap().len()).unwrap().unwrap();
+        assert!((got - want).abs() < 1e-6, "{name}: {got} vs {want}");
+    }
+}
+
+#[test]
+fn high_score_pe_is_suspicious_never_malicious() {
+    let (e, _r) = model_engine(0.95);
+    let v = e.scan_file(&fixture("pe_high.bin"));
+    assert_eq!(v.status, Status::Suspicious, "{v:?}");
+    assert!(v.reasons.iter().any(|r| r.layer == Layer::Model && r.detail.starts_with("Static model 1.00")));
+    // below threshold stays clean
+    let v = e.scan_file(&fixture("pe_mid.bin"));
+    assert_eq!(v.status, Status::Clean, "{v:?}");
+    // even threshold 0 never escalates past Suspicious
+    let (e0, _r0) = model_engine(0.0);
+    assert_eq!(e0.scan_file(&fixture("pe_mid.bin")).status, Status::Suspicious);
+}
+
+#[test]
+fn model_skips_non_pe() {
+    let (e, _r) = model_engine(0.0);
+    let d = tempfile::tempdir().unwrap();
+    let junk = d.path().join("mz.bin");
+    std::fs::write(&junk, b"MZ not really a pe file at all").unwrap();
+    for p in [benign(d.path()), junk] {
+        let v = e.scan_file(&p);
+        assert_eq!(v.status, Status::Clean, "{v:?}");
+        assert_eq!(e.model_score(&p, std::fs::metadata(&p).unwrap().len()).unwrap(), None);
+    }
+}
+
+#[test]
+fn signature_still_wins_with_model_enabled() {
+    let (e, _r) = model_engine(0.0);
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("eicar.com");
+    std::fs::write(&p, eicar()).unwrap();
+    let v = e.scan_file(&p);
+    assert_eq!(v.status, Status::Malicious, "{v:?}");
+    assert!(v.reasons.iter().all(|r| r.layer != Layer::Model));
+}

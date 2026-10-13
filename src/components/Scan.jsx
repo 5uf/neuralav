@@ -139,11 +139,13 @@ async function act(command, done) {
 
 function layerRows(r) {
   const known = r.label === "Known malware";
-  if (r.status === "Not fully scanned") return [["Hash list", "Not scanned"], ["Signature", "Not scanned"]];
-  const sig = !known && !["Unknown", "None"].includes(r.label);
+  if (r.status === "Not fully scanned") return [["Hash list", "Not scanned"], ["Signature", "Not scanned"], ["Static model", "Not scanned"]];
+  const model = r.label.startsWith("Static model");
+  const sig = !known && !model && !["Unknown", "None"].includes(r.label);
   return [
     ["Hash list", known ? r.reason : "No match"],
     ["Signature", sig ? r.label : "No match"],
+    ["Static model", model ? r.label : "No match"],
   ];
 }
 
@@ -269,7 +271,6 @@ export default function Scan() {
                   <div><span class="muted" style={{ "font-size": "12px" }}>Selected file</span><h2 id="file-title" class="cell-path" style={{ color: "var(--tx)", "font-size": "13px" }}>{showPath(r().path)}</h2></div>
                   <dl class="kv">
                     <For each={layerRows(r())}>{([k, v]) => (<><dt>{k}</dt><dd class={v !== "No match" ? "warn-tx" : ""}>{v}</dd></>)}</For>
-                    <dt>Static model</dt><dd class="muted">Coming soon</dd>
                     <dt>Code analysis</dt><dd class="muted">Coming soon</dd>
                     <dt>Size</dt><dd class="mono">—</dd>
                     <dt>SHA-256</dt><dd class="mono">—</dd>

@@ -101,6 +101,7 @@ fn class_string(v: &Verdict) -> String {
         (None, _, Some(r)) => match r.layer {
             Layer::Hash => ("Known malware".to_string(), r.detail.clone()),
             Layer::Signature => (r.detail.clone(), format!("Matched rule {}", r.detail)),
+            Layer::Model => (r.detail.clone(), "Statistical match; suspicious but not confirmed malicious".to_string()),
         },
         (None, _, None) => ("Unknown".to_string(), "Flagged without a reason".to_string()),
     };
@@ -278,6 +279,10 @@ mod tests {
             "Known malware,known bad x"
         );
         assert_eq!(class_string(&verdict(Status::Suspicious, vec![], None)), "Unknown,Flagged without a reason");
+        assert_eq!(
+            class_string(&verdict(Status::Suspicious, vec![(Layer::Model, "Static model 0.97")], None)),
+            "Static model 0.97,Statistical match; suspicious but not confirmed malicious"
+        );
     }
 
     #[test]

@@ -25,3 +25,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+      # Parser modules deny clippy::indexing_slicing (release builds abort on panic); a violation fails here.
+      - run: cargo clippy -p neuralav-engine --all-targets

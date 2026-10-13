@@ -36,7 +36,7 @@ Run the cheapest layers first. A later layer runs only when an earlier one leave
 | 1 | SHA-256 allowlist and known-bad set: sorted array of truncated hashes, mmapped | Exact known files | MB-scale data, O(log n) |
 | 2 | Own rule matcher (`aho-corasick` + import table; literal rules in `crates/engine/rules/sigs/` done). Replaced yara-x, whose wasmtime dependency is too heavy | Known strings and API sets, plus **carrier rules**: LLM endpoint or key + dynamic exec + capture or exfil | Per-file scan |
 | 2b | Unpackers (PyInstaller PYZ/CArchive, then Nuitka) | Feed the embedded bytecode and strings to layer 2 | Only on packed files |
-| 3 | Static GBDT on EMBER v3-style features (EMBER2024 Apache-2.0 models), hand-rolled evaluator over a flat node array | Unknown variants | Under 0.5 MB model. Can output **Suspicious** only, never Malicious |
+| 3 | Static GBDT on EMBER v3-style features (EMBER2024 Apache-2.0 models), hand-rolled evaluator over a flat node array | Unknown variants | Under 0.5 MB model. Can output **Suspicious** only, never Malicious. **Status: done** (`gbdt.rs`, `pe.rs`, `pe_features.rs`, `authenticode.rs`; model `rules/models/ember2024_pe.navgbdt`, 447 KB, Windows PE only, threshold 0.95, uncalibrated). Parity with thrember is exact for groups 1-4; imports, pefile warnings and authenticode are close approximations (see module headers) |
 | 4 | Lifter-lite: decode (`iced-x86` decoder only, ARM64 decoder) and Python bytecode, lift to a small IR, normalize, match API-call sequences per function and known-bad function fingerprints | What code can do (keyboard hooks, screen capture, webhook exfil, persistence) and code reused from known malware, even after junk insertion or register renaming | Disassembly. Only for files flagged by 1 to 3 |
 | 5 | Runtime behavior correlation (service) | The generated payload itself, by its effects | Event stream, always on |
 
@@ -107,7 +107,7 @@ Without a signed kernel driver (Windows) or the ES entitlement (macOS), the serv
 ## Phases
 
 1. **Engine**: proto and engine crates, hash layer, the `scan` CLI. Python, `cpython` and the fake stats are removed.
-1.5. **Static layers**: own rule matcher (literal-signature core done; replaced yara-x), PyInstaller reader, AI-carrier rules, GBDT evaluator with a parity test against Python LightGBM, and a harmless simulator in `tests/` (asks an LLM for code that prints a string, then runs it with `exec`).
+1.5. **Static layers**: own rule matcher (literal-signature core done; replaced yara-x), PyInstaller reader, AI-carrier rules, GBDT evaluator (done: `scripts/ember_parity.py` compares features and scores against thrember + LightGBM), and a harmless simulator in `tests/` (asks an LLM for code that prints a string, then runs it with `exec`).
 2. **Service + store**: SQLite, the quarantine vault, IPC, the UI as a client, and service install files.
 3. **Behavior correlation**: ETW (Windows) and eBPF (Linux) event sources, the per-process scorer, kill and quarantine.
 4. **Lifter-lite**: decoder, IR, normalizer, API-sequence rules and function fingerprints on flagged files.

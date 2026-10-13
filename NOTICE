@@ -1,0 +1,14 @@
+Neural-AV includes data derived from the following work.
+
+EMBER2024 (https://github.com/FutureComputing4AI/EMBER2024)
+  Licensed under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0); full text in LICENSES/Apache-2.0.txt.
+  - crates/engine/rules/models/ember2024_pe.navgbdt is the EMBER2024_PE LightGBM model
+    (Hugging Face: joyce8/EMBER2024-benchmark-models) converted to the NAVGBDT1 format.
+    The conversion changes the file format only, not the trees or leaf values.
+  - crates/engine/src/pe_features.rs reimplements the feature definitions of the thrember package.
+  Reference: Joyce et al., "EMBER2024 - A Benchmark Dataset for Holistic Evaluation of Malware Classifiers", KDD 2025.
+
+pefile (https://github.com/erocarrera/pefile)
+  Licensed under the MIT License.
+  - crates/engine/src/pe.rs reimplements pefile's parsing behavior (sections, import/export tables, Rich header, warnings)
+    so the EMBER2024 features match; no pefile source is copied.

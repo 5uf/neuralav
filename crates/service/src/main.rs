@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: neuralav-service scan <path> [--json] | version";
+const USAGE: &str = "usage: neuralav-service scan <path> [--json] | status | version";
 
 fn print_verdict(v: &Verdict, json: bool) {
     if json {
@@ -41,6 +41,23 @@ fn scan(path: &Path, json: bool) -> ExitCode {
     ExitCode::from(if detected { 1 } else if errors { 2 } else { 0 })
 }
 
+fn status() -> ExitCode {
+    match Engine::load(EngineConfig::discover()) {
+        Ok(e) => {
+            let s = e.status();
+            match s.model_trees {
+                Some(t) => println!("rules {}\nstatic model: loaded, {t} trees, threshold {}", s.rules, s.model_threshold),
+                None => println!("rules {}\nstatic model: disabled (models/ember2024_pe.navgbdt not found)", s.rules),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("engine: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
@@ -48,6 +65,7 @@ fn main() -> ExitCode {
             println!("neuralav-service {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        [c] if c == "status" => status(),
         [c, path] if c == "scan" => scan(Path::new(path), false),
         [c, path, f] | [c, f, path] if c == "scan" && f == "--json" => scan(Path::new(path), true),
         _ => {
