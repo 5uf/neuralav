@@ -11,7 +11,7 @@ pub enum Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Layer {
     Hash,
-    Yara,
+    Signature,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -17,8 +17,6 @@ src-tauri/neuralib/dist
 src-tauri/database.csv
 src-tauri/notification.csv
 
-# Over GitHub's 100 MB limit; distribute separately or via Git LFS
-src-tauri/models/Classifier/model.onnx
 
 # Local agent files: never commit
 CLAUDE.md

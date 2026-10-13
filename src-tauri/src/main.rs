@@ -100,7 +100,7 @@ fn class_string(v: &Verdict) -> String {
         (None, Status::Clean, _) => ("None".to_string(), "Nothing detected".to_string()),
         (None, _, Some(r)) => match r.layer {
             Layer::Hash => ("Known malware".to_string(), r.detail.clone()),
-            Layer::Yara => (r.detail.clone(), format!("Matched rule {}", r.detail)),
+            Layer::Signature => (r.detail.clone(), format!("Matched rule {}", r.detail)),
         },
         (None, _, None) => ("Unknown".to_string(), "Flagged without a reason".to_string()),
     };
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(class_string(&verdict(Status::Clean, vec![], None)), "None,Nothing detected");
         assert_eq!(class_string(&verdict(Status::Clean, vec![], Some("a,b"))), "Error,a b");
         assert_eq!(
-            class_string(&verdict(Status::Malicious, vec![(Layer::Yara, "EICAR_Test_File")], None)),
+            class_string(&verdict(Status::Malicious, vec![(Layer::Signature, "EICAR_Test_File")], None)),
             "EICAR_Test_File,Matched rule EICAR_Test_File"
         );
         assert_eq!(

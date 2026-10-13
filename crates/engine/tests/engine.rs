@@ -20,12 +20,12 @@ fn shipped_rules() -> PathBuf {
 }
 
 /// Rules dir with the given hash lists (None = file missing) and optionally the eicar rule.
-fn rules_dir(known_bad: Option<&str>, allow: Option<&str>, yara: bool) -> tempfile::TempDir {
+fn rules_dir(known_bad: Option<&str>, allow: Option<&str>, sigs: bool) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("yara")).unwrap();
+    std::fs::create_dir_all(dir.path().join("sigs")).unwrap();
     std::fs::create_dir_all(dir.path().join("hashes")).unwrap();
-    if yara {
-        std::fs::copy(shipped_rules().join("yara/eicar.yar"), dir.path().join("yara/eicar.yar")).unwrap();
+    if sigs {
+        std::fs::copy(shipped_rules().join("sigs/eicar.txt"), dir.path().join("sigs/eicar.txt")).unwrap();
     }
     if let Some(t) = known_bad {
         std::fs::write(dir.path().join("hashes/known_bad.txt"), t).unwrap();
@@ -69,14 +69,14 @@ fn benign(dir: &Path) -> PathBuf {
 }
 
 #[test]
-fn eicar_is_malicious_via_yara() {
+fn eicar_is_malicious_via_signature() {
     let (e, _r) = engine_with("", "", None);
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("eicar.com");
     std::fs::write(&p, eicar()).unwrap();
     let v = e.scan_file(&p);
     assert_eq!(v.status, Status::Malicious, "{v:?}");
-    assert!(v.reasons.iter().any(|r| r.layer == Layer::Yara && r.detail == "EICAR_Test_File"));
+    assert!(v.reasons.iter().any(|r| r.layer == Layer::Signature && r.detail == "EICAR_Test_File"));
     assert!(v.error.is_none());
 }
 
@@ -101,7 +101,7 @@ fn known_bad_hash_is_malicious_via_hash() {
 }
 
 #[test]
-fn allowlist_overrides_known_bad_and_yara() {
+fn allowlist_overrides_known_bad_and_signature() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("eicar.com");
     std::fs::write(&p, eicar()).unwrap();
@@ -119,7 +119,7 @@ fn oversized_file_is_an_error_not_clean() {
     let p = d.path().join("eicar.com");
     std::fs::write(&p, eicar()).unwrap();
     let v = e.scan_file(&p);
-    // YARA never ran, so the file must not look Clean: the error makes the UI and CLI report it.
+    // Signatures never ran, so the file must not look Clean: the error makes the UI and CLI report it.
     assert!(v.error.as_deref().is_some_and(|e| e.contains("not fully scanned") && e.contains("size limit")), "{v:?}");
     assert!(v.reasons.is_empty());
 }
@@ -206,4 +206,126 @@ fn scan_tree_reports_symlink_root_as_error() {
     e.scan_tree(&link, |v| seen.push(v));
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert!(seen[0].error.as_deref().is_some_and(|m| m.contains("symlink")));
+}
+
+/// Engine whose only rules are the given sigs file.
+fn engine_with_sigs(text: &str) -> (Engine, tempfile::TempDir) {
+    let dir = rules_dir(Some(""), Some(""), false);
+    std::fs::write(dir.path().join("sigs/t.txt"), text).unwrap();
+    (Engine::load(EngineConfig::new(dir.path())).unwrap(), dir)
+}
+
+fn scan_bytes(e: &Engine, data: &[u8]) -> Vec<String> {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("f.bin");
+    std::fs::write(&p, data).unwrap();
+    let v = e.scan_file(&p);
+    assert!(v.error.is_none(), "{v:?}");
+    v.reasons.into_iter().map(|r| r.detail).collect()
+}
+
+#[test]
+fn all_literals_are_required() {
+    let (e, _r) = engine_with_sigs("two\t\"alpha\";62657461\n");
+    assert!(scan_bytes(&e, b"..alpha..").is_empty());
+    assert!(scan_bytes(&e, b"..beta..").is_empty());
+    assert_eq!(scan_bytes(&e, b"beta...alpha"), ["two"]);
+}
+
+#[test]
+fn literal_spanning_chunk_boundary_matches() {
+    let (e, _r) = engine_with_sigs("span\t\"NEEDLE-ACROSS\"\n");
+    for off in [64 * 1024 - 3, 64 * 1024 - 1, 128 * 1024 - 5] {
+        let mut data = vec![b'.'; 200 * 1024];
+        data[off..off + 13].copy_from_slice(b"NEEDLE-ACROSS");
+        assert_eq!(scan_bytes(&e, &data), ["span"], "offset {off}");
+    }
+}
+
+#[test]
+fn malformed_rule_files_fail_load_with_file_and_line() {
+    for bad in ["no-tab-here\n", "r\t\"unterminated\n", "r\tzz\n", "r\t\"a\";\n", "\t\"a\"\n", "r\t\"a\" \"b\"\n"] {
+        let dir = rules_dir(Some(""), Some(""), false);
+        std::fs::write(dir.path().join("sigs/t.txt"), format!("# ok\n{bad}")).unwrap();
+        let e = load_err(&dir);
+        assert!(e.contains("t.txt:2"), "{bad:?} -> {e}");
+    }
+}
+
+/// Engine over a rules dir holding one sigs file with the given bytes.
+fn sig_engine(rules: &[u8]) -> (Engine, tempfile::TempDir) {
+    let dir = rules_dir(Some(""), Some(""), false);
+    std::fs::write(dir.path().join("sigs/t.txt"), rules).unwrap();
+    (Engine::load(EngineConfig::new(dir.path())).unwrap(), dir)
+}
+
+fn sig_names(e: &Engine, data: &[u8]) -> Vec<String> {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("f.bin");
+    std::fs::write(&p, data).unwrap();
+    let v = e.scan_file(&p);
+    assert!(v.error.is_none(), "{v:?}");
+    v.reasons.iter().filter(|r| r.layer == Layer::Signature).map(|r| r.detail.clone()).collect()
+}
+
+#[test]
+fn literal_over_4096_bytes_is_rejected_with_line() {
+    let dir = rules_dir(Some(""), Some(""), false);
+    let long = "a".repeat(4097);
+    std::fs::write(dir.path().join("sigs/t.txt"), format!("ok\t\"x\"\nbig\t\"{long}\"\n")).unwrap();
+    let e = load_err(&dir);
+    assert!(e.contains("t.txt:2") && e.contains("4096"), "{e}");
+    let ok = "a".repeat(4096);
+    std::fs::write(dir.path().join("sigs/t.txt"), format!("big\t\"{ok}\"\n")).unwrap();
+    Engine::load(EngineConfig::new(dir.path())).unwrap();
+}
+
+#[test]
+fn duplicate_literal_in_one_rule_matches() {
+    let (e, _r) = sig_engine(b"r\t\"a\";\"a\"\n");
+    assert_eq!(sig_names(&e, b"xax"), ["r"]);
+}
+
+#[test]
+fn literal_shared_by_two_rules_fires_both() {
+    let (e, _r) = sig_engine(b"r1\t\"abc\"\nr2\t\"abc\"\n");
+    assert_eq!(sig_names(&e, b"xabcx"), ["r1", "r2"]);
+}
+
+#[test]
+fn overlapping_literals_in_one_rule_match() {
+    let (e, _r) = sig_engine(b"r\t\"abc\";\"bcd\"\n");
+    assert_eq!(sig_names(&e, b"abcd"), ["r"]);
+}
+
+#[test]
+fn crlf_rule_file_loads_and_matches() {
+    let (e, _r) = sig_engine(b"# c\r\nr\t\"abc\"\r\n");
+    assert_eq!(sig_names(&e, b"abc"), ["r"]);
+}
+
+#[test]
+fn bom_rule_file_loads_and_matches() {
+    let (e, _r) = sig_engine(b"\xEF\xBB\xBFr\t\"abc\"\n");
+    assert_eq!(sig_names(&e, b"abc"), ["r"]);
+}
+
+#[test]
+fn file_shorter_than_max_len_still_scans() {
+    let long = "z".repeat(100);
+    let (e, _r) = sig_engine(format!("r\t\"{long}\"\ns\t\"hi\"\n").as_bytes());
+    assert_eq!(sig_names(&e, b"hi"), ["s"]);
+}
+
+#[test]
+fn max_len_literal_at_start_and_end_of_multi_chunk_file() {
+    let lit = "Q".repeat(4096);
+    let (e, _r) = sig_engine(format!("r\t\"{lit}\"\n").as_bytes());
+    let size = 64 * 1024 * 2 + 123;
+    let mut at_start = vec![b'.'; size];
+    at_start[..4096].copy_from_slice(lit.as_bytes());
+    assert_eq!(sig_names(&e, &at_start), ["r"]);
+    let mut at_end = vec![b'.'; size];
+    at_end[size - 4096..].copy_from_slice(lit.as_bytes());
+    assert_eq!(sig_names(&e, &at_end), ["r"]);
 }
