@@ -40,9 +40,9 @@ export function Layout(props) {
         </div>
         <div class="nv-links">
           {links.map((l) => (
-            <A href={l.href} end={l.end}>
+            <A href={l.href} end={l.end} title={l.label}>
               <svg {...svg}>{l.icon()}</svg>
-              {l.label}
+              <span class="nv-label">{l.label}</span>
             </A>
           ))}
         </div>
