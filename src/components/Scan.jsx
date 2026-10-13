@@ -3,7 +3,7 @@ import { createSignal, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { downloadDir, desktopDir, tempDir } from "@tauri-apps/api/path";
-import { describeRow, saveLastScan, showPath } from "../util";
+import { describeRow, formatBytes, saveLastScan, showPath } from "../util";
 import "./Scan.css";
 
 // Scan state lives outside the component so a running scan and its results survive navigation.
@@ -100,6 +100,15 @@ async function startScan() {
   setPicked(new Set(flagged.filter((r) => r.status === "Malicious").map((r) => r.path)));
   saveLastScan({ time: Date.now(), files: s.files, threats: s.threats });
   setBusy(false);
+}
+
+async function copyHash(h) {
+  try {
+    await navigator.clipboard.writeText(h);
+    setMessage("SHA-256 copied.");
+  } catch {
+    setMessage("Could not copy the hash.");
+  }
 }
 
 function toggle(path) {
@@ -272,11 +281,11 @@ export default function Scan() {
                   <dl class="kv">
                     <For each={layerRows(r())}>{([k, v]) => (<><dt>{k}</dt><dd class={v !== "No match" ? "warn-tx" : ""}>{v}</dd></>)}</For>
                     <dt>Code analysis</dt><dd class="muted">Coming soon</dd>
-                    <dt>Size</dt><dd class="mono">—</dd>
-                    <dt>SHA-256</dt><dd class="mono">—</dd>
+                    <dt>Size</dt><dd class="mono">{formatBytes(r().size)}</dd>
+                    <dt>SHA-256</dt><dd class="mono" title={r().sha256 || undefined} style={{ "font-size": "11px" }}>{r().sha256 || "—"}</dd>
                   </dl>
                   <div class="btn-row">
-                    <button type="button" class="btn btn-sm" disabled title="Coming soon">Copy hash</button>
+                    <button type="button" class="btn btn-sm" disabled={!r().sha256} onClick={() => copyHash(r().sha256)}>Copy hash</button>
                     <button type="button" class="btn btn-sm" disabled title="Coming soon">Show in folder</button>
                     <button type="button" class="btn btn-sm" disabled title="Coming soon">Not a threat</button>
                   </div>

@@ -1,5 +1,6 @@
 import { A } from "@solidjs/router";
-import { createSignal, onMount } from "solid-js";
+import { createSignal, onCleanup, onMount } from "solid-js";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { theme } from "./theme";
 import Dashboard from "./components/Dashboard";
@@ -31,6 +32,34 @@ export function Layout(props) {
     }
   });
 
+  const [stats, setStats] = createSignal("RAM — · CPU —");
+  onMount(() => {
+    let timer;
+    const poll = async () => {
+      try {
+        const s = await invoke("process_stats");
+        const ram = s.rss_bytes == null ? "—" : `${Math.round(s.rss_bytes / 1048576)} MB`;
+        const cpu = s.cpu_percent == null ? "—" : `${s.cpu_percent.toFixed(1)}%`;
+        setStats(`RAM ${ram} · CPU ${cpu}`);
+      } catch {
+        // Not running inside Tauri.
+      }
+    };
+    const sync = () => {
+      clearInterval(timer);
+      if (!document.hidden) {
+        poll();
+        timer = setInterval(poll, 3000);
+      }
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    onCleanup(() => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", sync);
+    });
+  });
+
   return (
     <div class={`nv t-${theme()}`}>
       <nav class="nv-nav" aria-label="Main">
@@ -47,8 +76,8 @@ export function Layout(props) {
           ))}
         </div>
         <div class="nv-foot">
-          <strong>Engine {version()}</strong>
-          <span class="mono">RAM — · CPU —</span>
+          <strong>App {version()}</strong>
+          <span class="mono" title="Core process only. The WebView renders in separate OS processes that are not counted. CPU: 100% = one core.">{stats()}</span>
         </div>
       </nav>
       {props.children}

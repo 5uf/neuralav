@@ -69,7 +69,8 @@ fn main() {
             get_noti,
             get_drives,
             remote_inference,
-            scan_path
+            scan_path,
+            process_stats
         ])
         .run(tauri::generate_context!());
     if let Err(e) = run {
@@ -142,10 +143,70 @@ fn scan_rows(engine: &Engine, root: &Path, row: impl Fn(&Verdict, String) -> Vec
     rows
 }
 
-// Result row: path, identity, "label,text" (or "Safe" for a fully scanned clean file).
+// Result row: path, identity, "label,text" (or "Safe" for a fully scanned clean file), size in bytes ("" if unreadable), sha256 ("" if not computed).
 fn scan_row(v: &Verdict, id: String) -> Vec<String> {
     let class = if v.error.is_none() && v.status == Status::Clean { "Safe".to_string() } else { class_string(v) };
-    vec![v.path.clone(), id, class]
+    let size = std::fs::symlink_metadata(&v.path).map(|m| m.len().to_string()).unwrap_or_default();
+    vec![v.path.clone(), id, class, size, v.sha256.clone()]
+}
+
+static CPU_LAST: Mutex<Option<(std::time::Instant, f64)>> = Mutex::new(None);
+
+#[derive(serde::Serialize)]
+struct ProcStats {
+    rss_bytes: Option<u64>,
+    cpu_percent: Option<f64>,
+}
+
+// Core process only; the WebView renders in separate OS processes that this does not count.
+#[cfg(unix)]
+fn cpu_seconds() -> Option<f64> {
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) } != 0 {
+        return None;
+    }
+    let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 / 1e6;
+    Some(t(u.ru_utime) + t(u.ru_stime))
+}
+#[cfg(not(unix))]
+fn cpu_seconds() -> Option<f64> {
+    None // ponytail: Windows needs GetProcessTimes (no windows bindings dep yet)
+}
+
+#[cfg(target_os = "macos")]
+fn rss_bytes() -> Option<u64> {
+    let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    let n = unsafe { libc::proc_pidinfo(libc::getpid(), libc::PROC_PIDTASKINFO, 0, &mut ti as *mut _ as *mut libc::c_void, size) };
+    (n == size).then_some(ti.pti_resident_size)
+}
+#[cfg(target_os = "linux")]
+fn rss_bytes() -> Option<u64> {
+    let pages: u64 = std::fs::read_to_string("/proc/self/statm").ok()?.split_whitespace().nth(1)?.parse().ok()?;
+    let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
+    pages.checked_mul(page)
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rss_bytes() -> Option<u64> {
+    None // ponytail: Windows needs GetProcessMemoryInfo
+}
+
+#[tauri::command]
+fn process_stats() -> ProcStats {
+    let now = std::time::Instant::now();
+    let cpu = cpu_seconds();
+    let mut last = CPU_LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let cpu_percent = match (cpu, *last) {
+        (Some(c), Some((t, c0))) => {
+            let wall = now.duration_since(t).as_secs_f64();
+            (wall > 0.0).then(|| ((c - c0) / wall * 100.0).max(0.0))
+        }
+        _ => None,
+    };
+    if let Some(c) = cpu {
+        *last = Some((now, c));
+    }
+    ProcStats { rss_bytes: rss_bytes(), cpu_percent }
 }
 
 #[tauri::command]
@@ -286,6 +347,17 @@ mod tests {
     }
 
     #[test]
+    fn process_stats_reports_rss_and_cpu_delta() {
+        let _ = process_stats();
+        std::hint::black_box((0..5_000_000u64).sum::<u64>());
+        let s = process_stats();
+        assert!(s.rss_bytes.is_none_or(|b| b > 0));
+        assert!(s.cpu_percent.is_none_or(|c| c >= 0.0));
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(s.rss_bytes.is_some());
+    }
+
+    #[test]
     fn scanned_gate_rejects_unscanned_and_empty_paths() {
         assert!(check_scanned("").is_err());
         assert!(check_scanned("/tests/never-scanned").is_err());
@@ -328,7 +400,10 @@ mod tests {
         let find = |p: &str| rows.iter().find(|r| r[0] == p).unwrap().clone();
         assert_eq!(find(&bad)[1], "Malicious");
         assert!(find(&bad)[2].starts_with("EICAR"), "{:?}", find(&bad));
-        assert_eq!(find(&good), vec![good.clone(), "Harmless".to_string(), "Safe".to_string()]);
+        let hello = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+        assert_eq!(find(&good), vec![good.clone(), "Harmless".to_string(), "Safe".to_string(), "5".to_string(), hello.to_string()]);
+        assert_eq!(find(&bad)[3], eicar().len().to_string());
+        assert_eq!(find(&bad)[4].len(), 64);
         assert!(check_scanned(&bad).is_ok());
         assert!(check_scanned(&good).is_err());
 
