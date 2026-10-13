@@ -218,16 +218,19 @@ mod tests {
         let src = base.join("evil, one.bin");
         fs::write(&src, b"x").unwrap();
         // Names with commas are refused rather than corrupting the csv.
-        assert!(quarantine(&base, src.to_str().unwrap()).is_err());
+        assert!(quarantine(&base, src.to_str().unwrap(), "Sig").is_err());
         let src = base.join("evil.bin");
         fs::write(&src, b"x").unwrap();
-        quarantine(&base, src.to_str().unwrap()).unwrap();
+        quarantine(&base, src.to_str().unwrap(), "Sig Name").unwrap();
         add_file(&base, src.to_str().unwrap(), "Sig,Name");
         assert_eq!(read_db(&base).len(), 1);
         assert_eq!(read_db(&base)[0][1], "Sig Name");
         assert_eq!(del_quarantine(&base, "evil.bin"), "File deleted");
         assert!(read_db(&base).iter().all(|r| r[0] != "evil.bin"));
         assert!(!quarantine_entry(&base, "evil.bin").unwrap().exists());
+        // The log records the original path and threat, not the vault path.
+        let last = read_noti(&base).pop().unwrap();
+        assert_eq!((last[1].as_str(), last[2].as_str(), last[3].as_str()), ("Deleted", "Sig Name", src.to_str().unwrap()));
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -236,10 +239,23 @@ mod tests {
         let base = scratch("delf");
         let src = base.join("a.bin");
         fs::write(&src, b"x").unwrap();
-        quarantine(&base, src.to_str().unwrap()).unwrap();
+        quarantine(&base, src.to_str().unwrap(), "Sig").unwrap();
         add_file(&base, src.to_str().unwrap(), "Sig");
-        delete_file(&base, quarantine_entry(&base, "a.bin").unwrap().to_str().unwrap()).unwrap();
+        delete_file(&base, quarantine_entry(&base, "a.bin").unwrap().to_str().unwrap(), "Sig").unwrap();
         assert!(read_db(&base).iter().all(|r| r[0] != "a.bin"));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn read_noti_pads_old_three_field_rows() {
+        let base = scratch("noti");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(noti_path(&base), "t1,Quarantined,/a/b\nt2,Deleted,Sig,/c/d, e\n").unwrap();
+        let rows = read_noti(&base);
+        assert_eq!(rows[0], ["t1", "Quarantined", "", "/a/b"]);
+        assert_eq!(rows[1], ["t2", "Deleted", "Sig", "/c/d, e"]);
+        add_noti(&base, "/x, y", "Deleted", "A,B\nC");
+        assert_eq!(read_noti(&base).pop().unwrap()[2..], ["A B C", "/x, y"]);
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -251,7 +267,7 @@ mod tests {
         let src = dir.join("m.bin");
         fs::write(&src, b"payload").unwrap();
         let sp = src.to_str().unwrap();
-        quarantine(&base, sp).unwrap();
+        quarantine(&base, sp, "Sig").unwrap();
         add_file(&base, sp, "Sig");
         assert!(!src.exists());
         assert_eq!(read_db(&base)[0][2], sp);
@@ -259,7 +275,7 @@ mod tests {
         assert_eq!(fs::read(&src).unwrap(), b"payload");
         assert!(read_db(&base).iter().all(|r| r[0] != "m.bin"));
         let noti = read_noti(&base);
-        assert!(noti.iter().any(|r| r.len() == 3 && r[1] == "Restored" && r[2] == sp));
+        assert!(noti.iter().any(|r| r.len() == 4 && r[1] == "Restored" && r[2] == "Sig" && r[3] == sp));
         fs::remove_dir_all(&base).unwrap();
     }
 }
@@ -283,7 +299,7 @@ fn move_file(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 // Quarantine a file
-pub fn quarantine(base: &Path, filepath: &str) -> Result<(), String> {
+pub fn quarantine(base: &Path, filepath: &str, threat: &str) -> Result<(), String> {
     // The DB is line-based; a newline in the path would restore to a different path.
     if filepath.contains(['\n', '\r']) {
         return Err("Invalid file path".to_string());
@@ -298,7 +314,7 @@ pub fn quarantine(base: &Path, filepath: &str) -> Result<(), String> {
         return Err("A quarantined file with this name already exists".to_string());
     }
     move_file(Path::new(filepath), &dest)?;
-    add_noti(base, filepath, "Quarantined");
+    add_noti(base, filepath, "Quarantined", threat);
     Ok(())
 }
 
@@ -309,22 +325,17 @@ pub fn restore_file(base: &Path, filename: &str) -> String {
         None => return "Invalid file name".to_string(),
     };
     if !is_quarantined.exists() { return "File not in quarantine".to_string(); }
-    let mut filepath = String::new();
-    for line in read_db(base) {
-        if line.len() > 2 && line[0] == filename {
-            filepath = line[2].to_string();
-        }
-    }
+    let (threat, filepath) = db_entry(base, filename);
     if filepath.is_empty() { return "File not in database".to_string(); }
     if Path::new(&filepath).exists() { return "Destination already exists".to_string(); }
     if let Err(e) = move_file(&is_quarantined, Path::new(&filepath)) { return e; }
     delete_row(base, filename);
-    add_noti(base, filepath.as_str(), "Restored");
+    add_noti(base, filepath.as_str(), "Restored", &threat);
     "File restored".to_string()
 }
 
 // Delete a file from the system
-pub fn delete_file(base: &Path, filepath: &str) -> Result<(), String> {
+pub fn delete_file(base: &Path, filepath: &str, threat: &str) -> Result<(), String> {
     let path = Path::new(filepath);
     if !path.exists() {
         return Err("File not found".to_string());
@@ -337,7 +348,7 @@ pub fn delete_file(base: &Path, filepath: &str) -> Result<(), String> {
             delete_row(base, name);
         }
     }
-    add_noti(base, filepath, "Deleted");
+    add_noti(base, filepath, "Deleted", threat);
     Ok(())
 }
 
@@ -352,8 +363,10 @@ pub fn del_quarantine(base: &Path, filename: &str) -> String {
     if let Err(e) = fs::remove_file(&path) {
         return format!("Unable to delete file: {}", e);
     }
+    let (threat, original) = db_entry(base, filename);
     delete_row(base, filename);
-    add_noti(base, &path.to_string_lossy(), "Deleted");
+    let logged = if original.is_empty() { path.to_string_lossy().into_owned() } else { original };
+    add_noti(base, &logged, "Deleted", &threat);
     "File deleted".to_string()
 }
 
@@ -371,14 +384,24 @@ fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
 }
 
 // Read a csv into rows of 3 fields (the last may contain commas); a missing file is an empty table.
-fn read_csv(path: &Path) -> Vec<Vec<String>> {
+fn read_csv(path: &Path, fields: usize) -> Vec<Vec<String>> {
     let contents = fs::read_to_string(path).unwrap_or_default();
-    contents.lines().map(|l| l.splitn(3, ',').map(String::from).collect()).collect()
+    contents.lines().map(|l| l.splitn(fields, ',').map(String::from).collect()).collect()
+}
+
+// (classification, original path) of a quarantined name; empty strings when missing.
+fn db_entry(base: &Path, filename: &str) -> (String, String) {
+    read_db(base)
+        .into_iter()
+        .rev()
+        .find(|r| r.len() > 2 && r[0] == filename)
+        .map(|r| (r[1].clone(), r[2].clone()))
+        .unwrap_or_default()
 }
 
 // read database csv file and convert data to array of list: name, classification, original path
 pub fn read_db(base: &Path) -> Vec<Vec<String>> {
-    read_csv(&db_path(base))
+    read_csv(&db_path(base), 3)
 }
 
 // find file in database and delete row
@@ -396,15 +419,20 @@ pub fn delete_row(base: &Path, filename: &str) {
     let _ = fs::write(db, new_contents.trim_end());
 }
 
-// Add notification to csv: time, action, path
-pub fn add_noti(base: &Path, filepath: &str, action: &str) {
+// Add notification to csv: time, action, threat, path
+pub fn add_noti(base: &Path, filepath: &str, action: &str, threat: &str) {
     let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    let _ = append_line(&noti_path(base), &format!("{},{},{}\n", time, action, clean(filepath)));
+    let threat = clean(threat).replace(',', " ");
+    let _ = append_line(&noti_path(base), &format!("{},{},{},{}\n", time, action, threat, clean(filepath)));
 }
 
-// read notification csv file and convert data to array of list: time, action, path
+// read notification csv: time, action, threat, path. Older 3-field rows get an empty threat.
 pub fn read_noti(base: &Path) -> Vec<Vec<String>> {
-    read_csv(&noti_path(base))
+    let mut rows = read_csv(&noti_path(base), 4);
+    for r in rows.iter_mut().filter(|r| r.len() == 3) {
+        r.insert(2, String::new());
+    }
+    rows
 }
 
 // Add a quarantined file to the database csv: name, classification, original path

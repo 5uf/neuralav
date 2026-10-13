@@ -1,4 +1,4 @@
-import { A, Route } from "@solidjs/router";
+import { A } from "@solidjs/router";
 import { createSignal, onMount } from "solid-js";
 import { getVersion } from "@tauri-apps/api/app";
 import { theme } from "./theme";
@@ -56,14 +56,13 @@ export function Layout(props) {
   );
 }
 
-export const routes = (
-  <>
-    <Route path="/" component={Dashboard} />
-    <Route path="/scan" component={Scan} />
-    <Route path="/monitor" component={Monitor} />
-    <Route path="/quarantine" component={Quarantine} />
-    <Route path="/activity" component={Activity} />
-    <Route path="/settings" component={Settings} />
-    <Route path="*" component={Dashboard} />
-  </>
-);
+// Plain config, not JSX: JSX at module level runs outside a reactive root and leaks.
+export const routes = [
+  { path: "/", component: Dashboard },
+  { path: "/scan", component: Scan },
+  { path: "/monitor", component: Monitor },
+  { path: "/quarantine", component: Quarantine },
+  { path: "/activity", component: Activity },
+  { path: "/settings", component: Settings },
+  { path: "*", component: Dashboard },
+];

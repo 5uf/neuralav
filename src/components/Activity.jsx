@@ -29,10 +29,10 @@ const details = {
   Restored: "Restored from quarantine",
 };
 
-// Log rows are "time,action,path"; blank trailing lines are dropped.
+// Log rows are "time,action,threat,path"; blank trailing lines are dropped.
 async function load() {
   try {
-    return (await invoke("get_noti")).filter((r) => r.length >= 3 && r[0] !== "").reverse();
+    return (await invoke("get_noti")).filter((r) => r.length >= 4 && r[0] !== "").reverse();
   } catch {
     return [];
   }
@@ -89,7 +89,7 @@ export default function Activity() {
                         {r[1]}
                       </span>
                     </td>
-                    <td><div class="cell-path" style={{ color: "var(--tx)" }}>{showPath(r[2])}</div><div class="muted" style={{ "font-size": "12px" }}>{details[r[1]] || ""}</div></td>
+                    <td><div class="cell-path" style={{ color: "var(--tx)" }}>{showPath(r[3])}</div><div class="muted" style={{ "font-size": "12px" }}>{[details[r[1]], r[2]].filter(Boolean).join(" · ")}</div></td>
                     <td>App</td>
                   </tr>
                 )}

@@ -182,7 +182,7 @@ async fn clean() -> String {
 
 // Quarantines a path that already passed the SCANNED gate.
 fn quarantine_scanned(filepath: &str, classification: &str) -> String {
-    match engine::utils::quarantine(&engine::utils::data_dir(), filepath) {
+    match engine::utils::quarantine(&engine::utils::data_dir(), filepath, classification) {
         Ok(()) => {
             scanned().remove(filepath);
             engine::utils::add_file(&engine::utils::data_dir(), filepath, classification);
@@ -219,16 +219,16 @@ fn restore(filename: &str) -> String {
 }
 
 #[tauri::command]
-fn remote_delete(filepath: &str) -> String {
+fn remote_delete(filepath: &str, classification: &str) -> String {
     match check_scanned(filepath) {
-        Ok(()) => delete_scanned(filepath),
+        Ok(()) => delete_scanned(filepath, classification),
         Err(e) => e,
     }
 }
 
 // Deletes a path that already passed the SCANNED gate.
-fn delete_scanned(filepath: &str) -> String {
-    match engine::utils::delete_file(&engine::utils::data_dir(), filepath) {
+fn delete_scanned(filepath: &str, classification: &str) -> String {
+    match engine::utils::delete_file(&engine::utils::data_dir(), filepath, classification) {
         Ok(()) => {
             scanned().remove(filepath);
             "File deleted".to_string()
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn destructive_commands_refuse_unscanned_paths() {
-        assert_eq!(remote_delete("/tests/never-scanned"), "Path was not scanned");
+        assert_eq!(remote_delete("/tests/never-scanned", "x"), "Path was not scanned");
         assert_eq!(quarantine_file("/tests/never-scanned", "x"), "Path was not scanned");
     }
 

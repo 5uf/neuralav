@@ -122,7 +122,7 @@ async function act(command, done) {
   for (const path of paths) {
     const row = results().find((r) => r.path === path);
     try {
-      const args = command === "quarantine_file" ? { filepath: path, classification: (row?.label || "Malicious").replace(/,/g, " ") } : { filepath: path };
+      const args = { filepath: path, classification: (row?.label || "Malicious").replace(/,/g, " ") };
       const out = await invoke(command, args);
       lines.push(`${showPath(path)}: ${out}`);
       if (out === done) gone.add(path);
@@ -202,7 +202,7 @@ export default function Scan() {
                 <>
                   <span class="mono muted" style={{ "font-size": "12px" }}>{s().files} files · {s().seconds.toFixed(1)} s · {(s().files / s().seconds).toFixed(0)} files/s</span>
                   <span class="scan-counts">
-                    <span class="warn-tx"><strong>{s().threats}</strong> threats</span>
+                    <span class="warn-tx"><strong>{s().threats}</strong> {s().threats === 1 ? "threat" : "threats"}</span>
                     <span><strong>{s().notFull}</strong> not fully scanned</span>
                     <span><strong>{s().clean}</strong> clean</span>
                   </span>

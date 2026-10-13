@@ -1,7 +1,7 @@
 import { A } from "@solidjs/router";
 import { createResource, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import { baseName, formatWhen, loadLastScan, showPath } from "../util";
+import { formatWhen, loadLastScan, showPath } from "../util";
 import "./Dashboard.css";
 
 async function safe(command) {
@@ -26,15 +26,17 @@ const schedules = ["Quick scan", "Full scan", "Rule updates"];
 export default function Dashboard() {
   const last = loadLastScan();
   const [noti] = createResource(() => safe("get_noti"));
-  const [db] = createResource(() => safe("get_quarantine"));
 
-  const events = () => (noti() || []).filter((r) => r.length >= 3 && r[0] !== "");
-  const handled = () => events().filter((r) => r[1] === "Quarantined" || r[1] === "Deleted");
+  const events = () => (noti() || []).filter((r) => r.length >= 4 && r[0] !== "");
+  // Log rows are "time,action,threat,path".
+  const isHandled = (r) => r[1] === "Quarantined" || r[1] === "Deleted";
+  const handled = () => events().filter(isHandled);
   const recent = () => handled().slice(-5).reverse();
-  // Quarantine rows are "name,classification,path"; the log is keyed by path, so match on the file name.
-  const threatFor = (path) => {
-    const row = (db() || []).find((r) => r.length >= 3 && r[0] === baseName(path));
-    return row ? row[1] : "—";
+  // A path counts while its latest event is Quarantined or Deleted; a restore un-counts it.
+  const handledCount = () => {
+    const last = new Map();
+    for (const r of events()) last.set(r[3], r);
+    return [...last.values()].filter(isHandled).length;
   };
 
   return (
@@ -55,7 +57,7 @@ export default function Dashboard() {
         <div class="stat"><span class="stat-label">Real-time monitor</span><span class="stat-value">Coming soon</span></div>
         <div class="stat"><span class="stat-label">Last scan</span><span class="stat-value">{last ? formatWhen(last.time) : "—"}</span></div>
         <div class="stat"><span class="stat-label">Files scanned</span><span class="stat-value">{last ? last.files : "—"}</span></div>
-        <div class="stat"><span class="stat-label">Threats handled</span><span class="stat-value">{noti.loading ? "—" : new Set(handled().map((r) => r[2])).size}</span></div>
+        <div class="stat"><span class="stat-label">Threats handled</span><span class="stat-value">{noti.loading ? "—" : handledCount()}</span></div>
         <div class="stat"><span class="stat-label">Rules</span><span class="stat-value">—</span></div>
       </section>
 
@@ -93,14 +95,13 @@ export default function Dashboard() {
         <Show when={recent().length > 0} fallback={<p class="empty">{noti.loading ? "Loading…" : "No detections handled yet."}</p>}>
           <div class="table-card">
             <table class="tbl">
-              <thead><tr><th scope="col">Threat</th><th scope="col">File</th><th scope="col" class="dash-col">Layer</th><th scope="col">Result</th><th scope="col" class="right">When</th></tr></thead>
+              <thead><tr><th scope="col">Threat</th><th scope="col">File</th><th scope="col">Result</th><th scope="col" class="right">When</th></tr></thead>
               <tbody>
                 <For each={recent()}>
                   {(r) => (
                     <tr>
-                      <td class="cell-name">{threatFor(r[2])}</td>
-                      <td class="cell-path">{showPath(r[2])}</td>
-                      <td class="dash-col">—</td>
+                      <td class="cell-name">{r[2] || "—"}</td>
+                      <td class="cell-path">{showPath(r[3])}</td>
                       <td class="warn-tx">{r[1]}</td>
                       <td class="right mono muted">{r[0]}</td>
                     </tr>

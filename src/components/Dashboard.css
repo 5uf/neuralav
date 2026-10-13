@@ -11,7 +11,7 @@
 .dash-recent .tbl th:last-child, .dash-recent .tbl td:last-child { padding-right: 8px; }
 @media (max-width: 760px) {
   .dash-recent .tbl { min-width: 0; }
-  .dash-recent .tbl thead, .dash-recent .tbl .dash-col { display: none; }
+  .dash-recent .tbl thead { display: none; }
   .dash-recent .tbl tr { display: flex; flex-wrap: wrap; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line2); }
   .dash-recent .tbl td { border: none; padding: 0; }
   .dash-recent .tbl td.cell-path { flex: 1 1 100%; }
