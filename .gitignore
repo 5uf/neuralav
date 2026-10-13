@@ -1,0 +1,21 @@
+node_modules
+dist
+target
+.DS_Store
+__pycache__
+
+# Malware samples: never commit
+Whatsapp.exe
+*.exe
+
+# Generated Python packaging output
+src-tauri/neuralib/build
+src-tauri/neuralib/dist
+*.egg-info
+
+# Runtime data (contains local paths)
+src-tauri/database.csv
+src-tauri/notification.csv
+
+# Over GitHub's 100 MB limit; distribute separately or via Git LFS
+src-tauri/models/Classifier/model.onnx

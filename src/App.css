@@ -1,0 +1,16 @@
+.logo.vite:hover {
+  filter: drop-shadow(0 0 2em #747bff);
+}
+
+.logo.solid:hover {
+  filter: drop-shadow(0 0 2em #2f5d90);
+}
+
+h1 #title {
+  font-size: 4em;
+  font-weight: 900;
+  color: #2f5d90;
+  text-shadow: 0 0 0.5em #2f5d90;
+  position: absolute;
+  margin-top: 2rem;
+}

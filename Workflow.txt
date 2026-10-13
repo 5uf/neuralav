@@ -1,0 +1,42 @@
+1. Preprocessing:
+
+a. Tokenization: Split the input text into individual words or subwords.
+b. Embedding: Assign each token a numerical vector representing its meaning.
+c. Positional Encoding: Inject markers indicating word order for context understanding.
+
+2. Transformer Encoder Loop:
+
+a. Multi-Head Attention:
+i. Divide into multiple "heads" focusing on different word relationships.
+ii. Each head calculates weighted interactions between words, enriching their representations.
+b. Feedforward Networks: Apply non-linear transformations for deeper feature extraction.
+c. Residual Connections and Layer Normalization: Stabilize learning and improve information flow.
+
+Focus on word relationship, calculate the weight, enhance representation, Apply non-linear transformations for deeper feature extraction. Stabilize learning and improve information flow
+
+3. Contextualized Word Representations:
+
+Each word emerges with a rich embedding, capturing its meaning based on surrounding words and overall sentence structure.
+
+acquire context from the representations
+
+4. Task-Specific Fine-Tuning:
+
+Add additional layers specialized for the desired task (e.g., sentiment analysis, question answering).
+These layers leverage the pre-trained knowledge from BERT but learn task-specific features.
+
+
+5. Inference Forward Pass:
+
+Feed the preprocessed text through the pre-trained BERT and task-specific layers.
+No backpropagation or weight updates occur, utilizing the already learned knowledge.
+
+
+6. Probability Output:
+
+The final layer generates probability values for different possible outcomes (e.g., sentiment category, answer choice).
+	
+
+
+BlackMamba malware utilizes a large language model (LLM) to synthesize polymorphic keylogger functionality on-the-fly by dynamically modifying the benign code at runtime. This is achieved without the need for any command-and-control infrastructure to deliver or verify the malicious keylogger functionality. The technique can runs completely undetected by EDR intervention. The neural network code synthesis, specifically using a transformer-based LLM like ChatGPT, allows BlackMamba to generate new code based on a prompt or input code, enabling the polymorphism magic within the malware.
+

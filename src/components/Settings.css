@@ -1,0 +1,53 @@
+.settings {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-gap: 1rem;
+    margin: 4rem 1rem 1rem 1rem;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    background-color: #666666;
+    width: 90%;
+    height: 100%;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+    overflow: hidden;
+    font-family: Arial, Helvetica, sans-serif;
+    height: 80%;
+    width: 100%;
+
+}
+
+.setting {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    position: relative;
+    background-color: #2365df;
+    border-radius: 10px;
+    padding: 2em 1.2em;
+    text-decoration: none;
+    z-index: 0;
+    overflow: hidden;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.theme {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    position: relative;
+    border-radius: 10px;
+    padding: 2em 1.2em;
+    text-decoration: none;
+}
+
+.theme-option {
+    margin: 0 0 2rem 0;
+}
+
+input[type="radio"] {
+    margin: 1rem;
+}

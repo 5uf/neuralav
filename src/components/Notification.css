@@ -1,0 +1,19 @@
+.noti-container {
+   width: 80%;
+    height: 80%;
+    
+}
+
+.notification-content {
+    display: grid;
+    grid-template-columns: repeat(1, 1fr);
+    grid-gap: 1rem;
+    margin: 1rem;
+    padding: 1rem;
+    border-radius: 1rem;
+    transition: box-shadow 0.3s ease;
+    font-size: small;
+    overflow-y: scroll;
+    height: 100%;
+    width: 100%;
+}

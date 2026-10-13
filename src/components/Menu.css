@@ -1,0 +1,58 @@
+.menu {
+    position: fixed;
+    top: 3.7em;
+    left: 0;
+    bottom: 0;
+    margin-left: 1em;
+    width: 8%;
+    background-color: #ffffffe0;
+    box-shadow: 0 0 1em rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    will-change: transform;
+    transition: 0.75s;
+    border-radius: 20px;
+  }
+  
+  
+  .menu .logo.tauri:hover {
+    filter: drop-shadow(0 0 2em #24c8db);
+  }
+  
+  .menu .logo.vite:hover {
+    filter: drop-shadow(0 0 2em #747bff);
+  }
+  
+  .menu ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .menu ul li {
+    width: 100%;
+    text-align: center;
+    padding: 0.5em;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: 0.25s;
+  }
+
+    .menu ul li:hover {
+        background-color: #e0e0e0;
+        color: rgb(0, 0, 0);
+    }
+
+    p {
+        font-size: 0.5em;
+        color: black;
+    }
+
+
+
+    
