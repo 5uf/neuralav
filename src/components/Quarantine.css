@@ -1,15 +1,7 @@
-.quarantine-container {
-  display: grid;
-    grid-template-columns: repeat(1, 1fr);
-    align-items: center;
-    grid-gap: 1rem;
-    margin: 1rem;
-    padding: 1rem;
-    border-radius: 1rem;
-    transition: box-shadow 0.3s ease;
-    overflow-y: scroll;
-    width: 100%;
-}
-
-
-
+.q-search { width: 220px; }
+.q-card { padding: 10px 0 4px; }
+.q-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 8px; }
+.q-bar .btn-row { margin-left: auto; }
+.q-table { overflow-x: auto; }
+.q-table .tbl { min-width: 680px; }
+.q-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; font-size: 13px; }

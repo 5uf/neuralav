@@ -17,4 +17,6 @@ export default defineConfig(async () => ({
   // 3. to make use of `TAURI_ENV_DEBUG` and other env variables
   // https://v2.tauri.app/reference/environment-variables/
   envPrefix: ["VITE_", "TAURI_ENV_"],
+  // 4. the app CSP allows fonts only from 'self', so never inline them as data: URIs
+  build: { assetsInlineLimit: 0 },
 }));

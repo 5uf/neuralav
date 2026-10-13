@@ -1,0 +1,8 @@
+.act-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.act-chip { min-height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--btn-line); background: transparent; color: var(--chip-tx); font: inherit; font-size: 13px; cursor: pointer; }
+.act-chip[aria-pressed="true"] { border-color: var(--ac-line); background: var(--ac-bg); color: var(--tx); }
+.act-chip:disabled { opacity: .5; cursor: not-allowed; }
+.act-table .tbl { min-width: 600px; }
+.act-time { width: 160px; }
+.act-event { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
+.act-event.threat { color: var(--warn-tx); }

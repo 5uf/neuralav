@@ -1,0 +1,5 @@
+.mon-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mon-search { width: 180px; }
+.mon-table .tbl { min-width: 600px; }
+.mon-aside { display: flex; flex-direction: column; gap: 10px; border-color: var(--warn-line); }
+.mon-aside h2 { font-size: 16px; }

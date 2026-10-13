@@ -1,214 +1,116 @@
-import { createSignal } from "solid-js";
+import { A } from "@solidjs/router";
+import { createResource, For, Show } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
-import Memory from "./widgets/memory";
-import { jsPDF } from "jspdf";
-import { useNavigate } from "@solidjs/router";
+import { baseName, formatWhen, loadLastScan, showPath } from "../util";
 import "./Dashboard.css";
-function Dashboard() {
-  const navigate = useNavigate();
-  var [displayMsg, setDisplayMsg] = createSignal("");
-  var [displayMsg2, setDisplayMsg2] = createSignal("");
 
-  var filepath = "";
-  var metadata = "";
-  var mal_class = "";
-  var text = "";
-  async function scan() {
-    filepath = this.files[0].name;
-    if (this.files.name != "") {
-      showLoading();
-      var output = await invoke("identify", { filename: filepath });
-      setDisplayMsg(output);
-      hideLoading();
-      if (output == "Malicious") {
-        document.getElementById("loader").style.display = "block";
-        var result = await invoke("classify", { filename: filepath });
-        metadata = await invoke("metafunc", { filepath: filepath });
-        console.log(metadata);
-        mal_class = result.split(",")[0];
-        text = result.split(",")[1];
-        var classification = mal_class;
-        document.getElementById("loader").style.display = "none";
-        var cls = document.getElementById("classification");
-        cls.style.whiteSpace = "pre-line";
-        cls.textContent = classification + "\n" + text;
-        document.getElementById("btn").style.display = "block";
-      } else if (output == "Suspicious") {
-        document.getElementById("classification").textContent = "Suspicious: possible malware, review before acting";
-        document.getElementById("btn").style.display = "none";
-      } else if (output == "Harmless") {
-        document.getElementById("classification").textContent = "Harmless";
-        document.getElementById("btn").style.display = "none";
-      } else {
-        document.getElementById("classification").textContent = "";
-        document.getElementById("btn").style.display = "none";
-      }
-    } else {
-      setDisplayMsg("No file selected");
-    }
+async function safe(command) {
+  try {
+    return await invoke(command);
+  } catch {
+    return [];
   }
-  async function deleteFile() {
-    showLoading();
-    var output = await invoke("delete_file", { filepath: filepath });
-    setDisplayMsg2(output);
-    hideLoading();
-    document.getElementById("output").style.display = "none";
-    setTimeout(function () {
-      setDisplayMsg2("");
-    }, 5000);
-    report();
-    close();
-  }
-
-  async function quarantineFile() {
-    showLoading();
-    console.log(filepath);
-    var output = await invoke("quarantine", {
-      file: filepath,
-      classification: mal_class,
-    });
-    console.log(output);
-    setDisplayMsg2(output);
-    hideLoading();
-    document.getElementById("output").style.display = "none";
-    setTimeout(function () {
-      setDisplayMsg2("");
-    }, 5000);
-    report();
-  }
-
-
-  async function report() {
-    document.getElementById("report").style.display = "block";
-    document.getElementById("output").style.display = "none";
-  }
-
- async function sendReport() {
-    //get the file name and the classification
-    var filename = filepath.split("\\").pop();
-    var report = {
-      filename: filename,
-      classification: mal_class,
-    }
-    //generate the pdf
-    var doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text("Neural-AV Report", 10, 10);
-    doc.setFontSize(12);
-    doc.text("Time Detected: " + new Date().toLocaleString(), 10, 15);
-    doc.text("Name of File: " + report.filename, 10, 20);
-    doc.text("Path of File: " + filepath, 10, 25);
-    doc.text("Malware Classification Type: " + report.classification, 10, 30);
-    doc.text(metadata, 10, 45);
-    doc.save("report.pdf");
-    
-    closeReport();
-    setDisplayMsg2("Report sent successfully!");
-    setInterval(function () {
-      setDisplayMsg2("");
-    }
-    , 5000);
-    close();    
-  }
-
-  function closeReport() {
-    document.getElementById("report").style.display = "none";
-    close();
-  }
-
-  function showLoading() {
-    document.getElementById("loading").style.display = "block";
-    document.getElementById("output").style.display = "none";
-    document.getElementById("widget").style.display = "none";
-    document.getElementById("dashboard-btn").style.display = "none";
-  }
-
-  function hideLoading() {
-    document.getElementById("loading").style.display = "none";
-    document.getElementById("output").style.display = "block";
-  }
-
-  function close() {
-    document.getElementById("output").style.display = "none";
-    document.getElementById("widget").style.display = "flex";
-    document.getElementById("dashboard-btn").style.display = "flex";
-    document.getElementById("classification").textContent = "Processing...";
-    setDisplayMsg("");
-  }
-  
-
-  return (
-    <div class="container">
-      <div id="title-card">My Dashboard</div>
-      <div class="dashboard" id="widget">
-        <div class="card">
-          <Memory />
-        </div>
-      </div>
-      <br />
-      <h4 class="messsage" id="displayMsg2">{displayMsg2}</h4>
-        
-      <div class="output-card" id="output" style="display: none;">
-        <button class="close" onClick={close}>
-          X
-        </button>
-        <div class="title-card">
-
-          <div class="result-process"><h4 id="classification">{displayMsg}</h4>
-          <div id="loader" class="lds-hourglass" style={{ display: "none" }}></div>
-          </div>
-          <div class="process-title">
-          <p>1. Preprocess binary and tokenize input</p>
-          <p>2. Focus on input relationship and calculate the weight</p>
-          <p>3. Acquire context from the representations</p>
-          <p>4. The preprocessed text is fed through BERT's layer with a softmax activation function</p>
-          <p>5. The threat analysis layer outputs a probability distribution over threat classes.</p>
-          </div>
-        </div>
-        
-       
-        <div class="btn" id="btn" style={{ display: "none" }}>
-          <button id="quarantine" onClick={quarantineFile}>
-            Quarantine
-          </button>
-          <button id="delete" onClick={deleteFile}>
-            Delete
-          </button>
-        </div>
-      </div>
-      <div class="report-card" id="report" style={{ display: "none" }}>
-        <h4>Do you want a PDF report regarding this?</h4>
-        <div class="report-card-body">
-          <button class="btn" onClick={closeReport} id="no">
-            No
-          </button>
-          <button class="btn" onClick={sendReport} id="yes">
-            Yes
-          </button>
-        </div>
-      </div>
-
-      <div class="loader" id="loading" style="display: none;"></div>
-
-      <div class="dashboard-btn" id="dashboard-btn">
-        <button class="btn2" onClick={() => navigate("/drivescan")}>Drive Scan</button>
-        <button class="btn2" onClick={() => navigate("/multiscan")}>Folder Scan</button>
-        <input
-          type="file"
-          id="file"
-          name="file"
-          onChange={scan}
-          style="display:none;"
-        />
-        <button
-          class="btn2"
-          onClick={() => document.getElementById("file").click()}
-        >
-          File Scan
-        </button>
-      </div>
-    </div>
-  );
 }
 
-export default Dashboard;
+const layers = [
+  { name: "Hash lists", state: "Active" },
+  { name: "Signature rules", state: "Active" },
+  { name: "AI-malware carrier rules", soon: true },
+  { name: "Static model", note: "(Windows apps)", soon: true },
+  { name: "Code analysis", soon: true },
+  { name: "Behavior monitor", soon: true },
+];
+
+const schedules = ["Quick scan", "Full scan", "Rule updates"];
+
+export default function Dashboard() {
+  const last = loadLastScan();
+  const [noti] = createResource(() => safe("get_noti"));
+  const [db] = createResource(() => safe("get_quarantine"));
+
+  const events = () => (noti() || []).filter((r) => r.length >= 3 && r[0] !== "");
+  const handled = () => events().filter((r) => r[1] === "Quarantined" || r[1] === "Deleted");
+  const recent = () => handled().slice(-5).reverse();
+  // Quarantine rows are "name,classification,path"; the log is keyed by path, so match on the file name.
+  const threatFor = (path) => {
+    const row = (db() || []).find((r) => r.length >= 3 && r[0] === baseName(path));
+    return row ? row[1] : "—";
+  };
+
+  return (
+    <main class="nv-main">
+      <header class="page-head">
+        <h1>Dashboard</h1>
+        <span class="dash-status">
+          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10" /></svg>
+          On-demand scanning
+        </span>
+        <div class="page-actions">
+          <button type="button" class="btn" disabled title="Coming soon">Update rules</button>
+          <A href="/scan" class="btn btn-primary">Quick scan</A>
+        </div>
+      </header>
+
+      <section class="stats" aria-label="Status">
+        <div class="stat"><span class="stat-label">Real-time monitor</span><span class="stat-value">Coming soon</span></div>
+        <div class="stat"><span class="stat-label">Last scan</span><span class="stat-value">{last ? formatWhen(last.time) : "—"}</span></div>
+        <div class="stat"><span class="stat-label">Files scanned</span><span class="stat-value">{last ? last.files : "—"}</span></div>
+        <div class="stat"><span class="stat-label">Threats handled</span><span class="stat-value">{noti.loading ? "—" : new Set(handled().map((r) => r[2])).size}</span></div>
+        <div class="stat"><span class="stat-label">Rules</span><span class="stat-value">—</span></div>
+      </section>
+
+      <div class="dash-grid">
+        <section class="card stack" aria-labelledby="layers-title">
+          <h2 id="layers-title" class="card-head">Protection layers</h2>
+          <For each={layers}>
+            {(l) => (
+              <div class="dash-row">
+                <span>{l.name} <Show when={l.note}><span class="muted">{l.note}</span></Show></span>
+                <Show when={l.soon} fallback={<span class="dash-state">{l.state}</span>}><span class="soon">Coming soon</span></Show>
+              </div>
+            )}
+          </For>
+        </section>
+
+        <section class="card stack" aria-labelledby="ai-title">
+          <div class="card-head"><h2 id="ai-title">Apps using AI services</h2><A href="/monitor">Open monitor</A></div>
+          <p class="empty">No data yet. The live monitor is coming soon.</p>
+          <p class="dash-note">Will flag unknown apps that call an AI service and then run new code, log keys or capture the screen.</p>
+        </section>
+
+        <section class="card stack" aria-labelledby="sched-title">
+          <div class="card-head"><h2 id="sched-title">Scheduled scans</h2><A href="/settings">Edit</A></div>
+          <For each={schedules}>
+            {(s) => (
+              <div class="dash-row"><span>{s}</span><span class="soon">Coming soon</span></div>
+            )}
+          </For>
+        </section>
+      </div>
+
+      <section class="card dash-recent" aria-labelledby="recent-title">
+        <div class="card-head"><h2 id="recent-title">Recent detections</h2><A href="/activity">View all</A></div>
+        <Show when={recent().length > 0} fallback={<p class="empty">{noti.loading ? "Loading…" : "No detections handled yet."}</p>}>
+          <div class="table-card">
+            <table class="tbl">
+              <thead><tr><th scope="col">Threat</th><th scope="col">File</th><th scope="col" class="dash-col">Layer</th><th scope="col">Result</th><th scope="col" class="right">When</th></tr></thead>
+              <tbody>
+                <For each={recent()}>
+                  {(r) => (
+                    <tr>
+                      <td class="cell-name">{threatFor(r[2])}</td>
+                      <td class="cell-path">{showPath(r[2])}</td>
+                      <td class="dash-col">—</td>
+                      <td class="warn-tx">{r[1]}</td>
+                      <td class="right mono muted">{r[0]}</td>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+        </Show>
+      </section>
+    </main>
+  );
+}

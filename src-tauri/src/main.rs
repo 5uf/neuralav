@@ -11,8 +11,6 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, State};
 
-const FOLDER: &str = "C:\\Users\\muhds\\Desktop\\Test";
-
 // Paths returned by scans; destructive commands only act on these.
 static SCANNED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
@@ -20,20 +18,11 @@ fn scanned() -> std::sync::MutexGuard<'static, BTreeSet<String>> {
     SCANNED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-// All regular files under root; unreadable entries are skipped.
-fn list_files(root: &str) -> Vec<String> {
-    walkdir::WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_string_lossy().into_owned())
-        .collect()
-}
-
 fn main() {
     let run = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            engine::utils::init_data_dir(app.path().app_data_dir()?)?;
             // Bundled rules first (Tauri resource dir), then env var / exe dir / dev tree.
             let cfg = app
                 .path()
@@ -70,25 +59,17 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            identify,
-            classify,
             optimize,
-            quarantine,
             quarantine_file,
             clean,
-            memory,
-            delete_file,
-            delete_q,
             remote_delete,
             restore,
             get_quarantine,
             del_quarantine,
             get_noti,
-            multiscan,
             get_drives,
-            remote_scan,
             remote_inference,
-            metafunc
+            scan_path
         ])
         .run(tauri::generate_context!());
     if let Err(e) = run {
@@ -131,18 +112,6 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> 
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| format!("Error: {}", e))
 }
 
-// Scans a file found by name under FOLDER. Malicious paths enter SCANNED.
-fn scan_one(engine: &Engine, filename: &str) -> Verdict {
-    let v = match engine::func::traverse_path(FOLDER, filename) {
-        Ok(path) => engine.scan_file(&path),
-        Err(e) => Verdict { path: filename.to_string(), sha256: String::new(), status: Status::Clean, reasons: Vec::new(), error: Some(e) },
-    };
-    if v.status == Status::Malicious {
-        scanned().insert(v.path.clone());
-    }
-    v
-}
-
 // Destructive commands only act on non-empty paths that a scan flagged Malicious.
 fn check_scanned(path: &str) -> Result<(), String> {
     if path.is_empty() || !scanned().contains(path) {
@@ -151,44 +120,12 @@ fn check_scanned(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-// Resolves a bare name under FOLDER, then applies the SCANNED gate.
-fn gated_path(name: &str) -> Result<String, String> {
-    let path = engine::func::traverse_path(FOLDER, name)?.to_string_lossy().into_owned();
-    check_scanned(&path)?;
-    Ok(path)
-}
-
-#[tauri::command]
-async fn identify(engine: Eng<'_>, filename: String) -> Result<String, String> {
-    let engine = engine.inner().clone();
-    Ok(blocking(move || identity(&scan_one(&engine, &filename))).await.unwrap_or_else(|e| e))
-}
-
-#[tauri::command]
-async fn classify(engine: Eng<'_>, filename: String) -> Result<String, String> {
-    let engine = engine.inner().clone();
-    Ok(blocking(move || {
-        let v = scan_one(&engine, &filename);
-        match &v.error {
-            Some(e) => format!("Error: {}", e),
-            None => class_string(&v),
-        }
-    })
-    .await
-    .unwrap_or_else(|e| e))
-}
-
 #[tauri::command]
 fn get_drives() -> Vec<String> {
     ('A'..='Z')
         .map(|c| format!("{}:\\", c))
         .filter(|d| Path::new(d).exists())
         .collect()
-}
-
-#[tauri::command]
-fn remote_scan(drive: &str) -> Vec<String> {
-    list_files(drive)
 }
 
 // Scans a tree on a blocking thread. Calls `row` per verdict; only Malicious paths enter SCANNED.
@@ -204,27 +141,29 @@ fn scan_rows(engine: &Engine, root: &Path, row: impl Fn(&Verdict, String) -> Vec
     rows
 }
 
-#[tauri::command]
-async fn remote_inference(engine: Eng<'_>, drive: String) -> Result<Vec<Vec<String>>, String> {
-    let engine = engine.inner().clone();
-    blocking(move || scan_rows(&engine, Path::new(&drive), |v, id| vec![v.path.clone(), id])).await
+// Result row: path, identity, "label,text" (or "Safe" for a fully scanned clean file).
+fn scan_row(v: &Verdict, id: String) -> Vec<String> {
+    let class = if v.error.is_none() && v.status == Status::Clean { "Safe".to_string() } else { class_string(v) };
+    vec![v.path.clone(), id, class]
 }
 
 #[tauri::command]
-async fn multiscan(engine: Eng<'_>, directory: String) -> Result<Vec<Vec<String>>, String> {
-    let rel = Path::new(&directory);
-    if rel.has_root() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
-        return Ok(Vec::new());
-    }
-    let dir = Path::new(FOLDER).join(rel);
+async fn remote_inference(engine: Eng<'_>, drive: String) -> Result<Vec<Vec<String>>, String> {
     let engine = engine.inner().clone();
-    blocking(move || {
-        scan_rows(&engine, &dir, |v, id| {
-            let class = if v.error.is_none() && v.status == Status::Clean { "Safe".to_string() } else { class_string(v) };
-            vec![v.path.clone(), id, class]
-        })
-    })
-    .await
+    blocking(move || scan_rows(&engine, Path::new(&drive), scan_row)).await
+}
+
+// Read-only scan of a picked file or folder. The path is canonicalized first; links inside a tree are not followed.
+// Malicious paths enter SCANNED.
+#[tauri::command]
+async fn scan_path(engine: Eng<'_>, path: String) -> Result<Vec<Vec<String>>, String> {
+    let engine = engine.inner().clone();
+    blocking(move || scan_path_rows(&engine, &path)).await?
+}
+
+fn scan_path_rows(engine: &Engine, path: &str) -> Result<Vec<Vec<String>>, String> {
+    let root = std::fs::canonicalize(path).map_err(|e| format!("Cannot open {}: {}", path, e))?;
+    Ok(scan_rows(engine, &root, scan_row))
 }
 
 #[tauri::command]
@@ -241,21 +180,12 @@ async fn clean() -> String {
         .unwrap_or_else(|e| format!("Clean up failed: {}", e))
 }
 
-#[tauri::command]
-fn quarantine(file: &str, _classification: &str) -> String {
-    let filepath = match gated_path(file) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
-    quarantine_scanned(&filepath, _classification)
-}
-
 // Quarantines a path that already passed the SCANNED gate.
 fn quarantine_scanned(filepath: &str, classification: &str) -> String {
-    match engine::utils::quarantine(filepath) {
+    match engine::utils::quarantine(&engine::utils::data_dir(), filepath) {
         Ok(()) => {
             scanned().remove(filepath);
-            engine::utils::add_file(filepath, classification);
+            engine::utils::add_file(&engine::utils::data_dir(), filepath, classification);
             "File quarantined".to_string()
         }
         Err(e) => e,
@@ -263,28 +193,28 @@ fn quarantine_scanned(filepath: &str, classification: &str) -> String {
 }
 
 #[tauri::command]
-fn quarantine_file(filepath: &str, _classification: &str) -> String {
+fn quarantine_file(filepath: &str, classification: &str) -> String {
     match check_scanned(filepath) {
-        Ok(()) => quarantine_scanned(filepath, _classification),
+        Ok(()) => quarantine_scanned(filepath, classification),
         Err(e) => e,
     }
 }
 
 #[tauri::command]
 fn get_quarantine() -> Vec<Vec<String>> {
-    let result = engine::utils::read_db();
+    let result = engine::utils::read_db(&engine::utils::data_dir());
     return result;
 }
 
 #[tauri::command]
 fn get_noti() -> Vec<Vec<String>> {
-    let result = engine::utils::read_noti();
+    let result = engine::utils::read_noti(&engine::utils::data_dir());
     return result;
 }
 
 #[tauri::command]
 fn restore(filename: &str) -> String {
-    let result = engine::utils::restore_file(filename);
+    let result = engine::utils::restore_file(&engine::utils::data_dir(), filename);
     return result;
 }
 
@@ -298,7 +228,7 @@ fn remote_delete(filepath: &str) -> String {
 
 // Deletes a path that already passed the SCANNED gate.
 fn delete_scanned(filepath: &str) -> String {
-    match engine::utils::delete_file(filepath) {
+    match engine::utils::delete_file(&engine::utils::data_dir(), filepath) {
         Ok(()) => {
             scanned().remove(filepath);
             "File deleted".to_string()
@@ -308,46 +238,8 @@ fn delete_scanned(filepath: &str) -> String {
 }
 
 #[tauri::command]
-fn delete_file(filepath: &str) -> String {
-    match gated_path(filepath) {
-        Ok(p) => delete_scanned(&p),
-        Err(e) => e,
-    }
-}
-
-#[tauri::command]
-fn delete_q(filepath: &str) -> String {
-    let quarantine = match std::fs::canonicalize("C:/neural-av/Quarantine") {
-        Ok(q) => q,
-        Err(_) => return "Invalid path".to_string(),
-    };
-    let parent = Path::new(filepath).parent().and_then(|p| std::fs::canonicalize(p).ok());
-    if parent.as_ref() != Some(&quarantine) {
-        return "Invalid path".to_string();
-    }
-    return match engine::utils::delete_file(filepath) {
-        Ok(()) => "File deleted".to_string(),
-        Err(e) => e,
-    };
-}
-
-#[tauri::command]
 fn del_quarantine(filename: &str) -> String {
-    return engine::utils::del_quarantine(filename);
-}
-
-#[tauri::command]
-fn memory() -> f32 {
-    let result = engine::utils::memory();
-    return result;
-}
-
-#[tauri::command]
-fn metafunc(filepath: &str) -> String {
-    match engine::func::traverse_path(FOLDER, filepath) {
-        Ok(p) => engine::utils::meta(&p.to_string_lossy()),
-        Err(e) => e,
-    }
+    return engine::utils::del_quarantine(&engine::utils::data_dir(), filename);
 }
 
 #[cfg(test)]
@@ -401,11 +293,48 @@ mod tests {
     }
 
     #[test]
-    fn delete_and_quarantine_commands_refuse_unscanned_paths() {
-        // An empty or unresolvable name must not act on anything.
-        assert!(delete_file("").ends_with("not found"));
-        assert!(quarantine("", "x").ends_with("not found"));
+    fn destructive_commands_refuse_unscanned_paths() {
         assert_eq!(remote_delete("/tests/never-scanned"), "Path was not scanned");
         assert_eq!(quarantine_file("/tests/never-scanned", "x"), "Path was not scanned");
+    }
+
+    // Two halves, so this source file is not itself an EICAR file.
+    fn eicar() -> Vec<u8> {
+        let a = r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-";
+        let b = r"ANTIVIRUS-TEST-FILE!$H+H*";
+        format!("{a}{b}").into_bytes()
+    }
+
+    #[test]
+    fn scan_path_flags_eicar_in_a_folder_and_a_file_and_gates_it() {
+        let engine = Engine::load(EngineConfig::discover()).expect("engine");
+        let dir = std::env::temp_dir().join(format!("neuralav-scan-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let bad = dir.join("sub").join("eicar.txt");
+        let good = dir.join("clean.txt");
+        std::fs::write(&bad, eicar()).unwrap();
+        std::fs::write(&good, b"hello").unwrap();
+        let bad = std::fs::canonicalize(&bad).unwrap().to_string_lossy().into_owned();
+        let good = std::fs::canonicalize(&good).unwrap().to_string_lossy().into_owned();
+
+        let rows = scan_path_rows(&engine, &dir.to_string_lossy()).unwrap();
+        assert_eq!(rows.len(), 2);
+        let find = |p: &str| rows.iter().find(|r| r[0] == p).unwrap().clone();
+        assert_eq!(find(&bad)[1], "Malicious");
+        assert!(find(&bad)[2].starts_with("EICAR"), "{:?}", find(&bad));
+        assert_eq!(find(&good), vec![good.clone(), "Harmless".to_string(), "Safe".to_string()]);
+        assert!(check_scanned(&bad).is_ok());
+        assert!(check_scanned(&good).is_err());
+
+        scanned().remove(&bad);
+        let one = scan_path_rows(&engine, &bad).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0][1], "Malicious");
+        assert!(check_scanned(&bad).is_ok());
+        scanned().remove(&bad);
+
+        assert!(scan_path_rows(&engine, "/tests/does-not-exist").is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
