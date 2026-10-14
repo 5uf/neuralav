@@ -70,7 +70,8 @@ fn main() {
             get_drives,
             remote_inference,
             scan_path,
-            process_stats
+            process_stats,
+            engine_status
         ])
         .run(tauri::generate_context!());
     if let Err(e) = run {
@@ -189,6 +190,18 @@ fn rss_bytes() -> Option<u64> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn rss_bytes() -> Option<u64> {
     None // ponytail: Windows needs GetProcessMemoryInfo
+}
+
+#[derive(serde::Serialize)]
+struct EngineInfo {
+    rules: usize,
+    model: bool,
+}
+
+#[tauri::command]
+fn engine_status(engine: Eng<'_>) -> EngineInfo {
+    let s = engine.status();
+    EngineInfo { rules: s.rules, model: s.model_trees.is_some() }
 }
 
 #[tauri::command]

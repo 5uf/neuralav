@@ -12,11 +12,12 @@ async function safe(command) {
   }
 }
 
-const layers = [
+const layers = (model) => [
   { name: "Hash lists", state: "Active" },
   { name: "Signature rules", state: "Active" },
+  { name: "PyInstaller unpacker", state: "Active" },
   { name: "AI-malware carrier rules", soon: true },
-  { name: "Static model", note: "(Windows apps)", soon: true },
+  { name: "Static model", note: "(Windows apps)", state: model == null ? "—" : model ? "Active" : "Off" },
   { name: "Code analysis", soon: true },
   { name: "Behavior monitor", soon: true },
 ];
@@ -26,6 +27,7 @@ const schedules = ["Quick scan", "Full scan", "Rule updates"];
 export default function Dashboard() {
   const last = loadLastScan();
   const [noti] = createResource(() => safe("get_noti"));
+  const [status] = createResource(() => invoke("engine_status").catch(() => null));
 
   const events = () => (noti() || []).filter((r) => r.length >= 4 && r[0] !== "");
   // Log rows are "time,action,threat,path".
@@ -58,13 +60,13 @@ export default function Dashboard() {
         <div class="stat"><span class="stat-label">Last scan</span><span class="stat-value">{last ? formatWhen(last.time) : "—"}</span></div>
         <div class="stat"><span class="stat-label">Files scanned</span><span class="stat-value">{last ? last.files : "—"}</span></div>
         <div class="stat"><span class="stat-label">Threats handled</span><span class="stat-value">{noti.loading ? "—" : handledCount()}</span></div>
-        <div class="stat"><span class="stat-label">Rules</span><span class="stat-value">—</span></div>
+        <div class="stat"><span class="stat-label">Rules</span><span class="stat-value">{status()?.rules ?? "—"}</span></div>
       </section>
 
       <div class="dash-grid">
         <section class="card stack" aria-labelledby="layers-title">
           <h2 id="layers-title" class="card-head">Protection layers</h2>
-          <For each={layers}>
+          <For each={layers(status()?.model)}>
             {(l) => (
               <div class="dash-row">
                 <span>{l.name} <Show when={l.note}><span class="muted">{l.note}</span></Show></span>

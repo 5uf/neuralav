@@ -34,8 +34,8 @@
         "fullscreen": false,
         "resizable": true,
         "title": "Neural-AV",
-        "width": 800,
-        "height": 650
+        "width": 1100,
+        "height": 720
       }
     ]
   }
